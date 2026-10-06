@@ -664,6 +664,7 @@
       "src/ui/styles/command-dock-compact.css",
       "src/ui/styles/command-dock-trays.css",
       "src/ui/styles/command-dock-sliding.css",
+      "src/ui/styles/features-code.css",
       "src/ui/styles/voice-cost.css",
       "src/ui/styles/first-run.css",
       "src/ui/styles/provider-settings.css",
@@ -1780,6 +1781,7 @@
       "src/services/meshFloorSampler.js",
       "src/services/requests.js",
       "src/services/terrainHeights.js",
+      "src/services/siteOrbit.js",
       "src/sharelink.js",
       "src/sources/live/aircraft.js",
       "src/sources/live/contract.js",
@@ -1862,6 +1864,7 @@
       "src/ui/radioPresentation.js",
       "src/ui/radioTunerModel.js",
       "src/ui/recordingControls.js",
+      "src/ui/featuresCode.js",
       "src/ui/rightPanelRail.js",
       "src/ui/sceneControls.js",
       "src/ui/scenePresentation.js",
@@ -2070,7 +2073,8 @@
       "mgrs",
       "pbf",
       "satellite.js",
-      "@jtarrio/webrtlsdr"
+      "@jtarrio/webrtlsdr",
+      "gifenc"
     ]
   },
   "application-catalog": {

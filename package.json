@@ -57,6 +57,7 @@
     "@meri-imperiumi/eccodes-wasm": "^2.48.2",
     "cesium": "^1.124.0",
     "egm96-universal": "^1.1.1",
+    "gifenc": "^1.0.3",
     "hls.js": "^1.7.3",
     "mgrs": "^2.1.0",
     "pbf": "^5.1.2",
