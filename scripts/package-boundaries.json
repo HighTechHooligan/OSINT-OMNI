@@ -2083,6 +2083,8 @@
       "src/services/siteBuildings.js",
       "src/services/siteViewshed.js",
       "src/services/viewshedMath.js",
+      "src/services/viewshedEngine.js",
+      "src/services/viewshedGpu.js",
       "src/tools/locationResearch.js",
       "src/ui/dossierPanel.js",
       "src/ui/popoutPanels.js",

@@ -8,7 +8,7 @@
  */
 import { openCoordinatePaste } from './coordinatePaste.js';
 import { parseLength, SNAP_STEPS_DEG } from '../services/surveyGeometry.js';
-import { parseHeightM } from '../services/viewshedMath.js';
+import { parseHeightM, parseHeightRange } from '../services/viewshedMath.js';
 import {
   CONTOUR_MAX_FT,
   CONTOUR_MIN_FT,
@@ -144,8 +144,8 @@ export function mountSiteTray({
         <h3 id="st-vs-h">Viewshed <small>what an observer can see</small></h3>
         <div class="site-tray-row">
           <label class="site-tray-select">Eye
-            <input type="text" class="site-tray-input" data-st="vs-eye" value="1.7 m" size="6"
-              aria-label="Observer eye height (m or ft)" title="Observer eye height above the ground: 1.7 m standing, 10 m pole, 30 m mast; ft works too" />
+            <input type="text" class="site-tray-input" data-st="vs-eye" value="1-2.5 m" size="8"
+              aria-label="Observer eye height or range (m or ft)" title="One height (1.7 m) or a band (1-2.5 m): with a band, green is seen even from the low eye, amber only from the high eye. 10 m pole, 30 ft roof; ft works too" />
           </label>
           <label class="site-tray-select">Target
             <input type="text" class="site-tray-input" data-st="vs-target" value="0 m" size="6"
@@ -158,6 +158,13 @@ export function mountSiteTray({
               <option value="dem">Bare earth (USGS 3DEP)</option>
             </select>
           </label>
+          <label class="site-tray-select">Compute on
+            <select data-st="vs-gpu" aria-label="Which processor runs the sight lines">
+              <option value="dedicated" selected>Dedicated GPU</option>
+              <option value="integrated">Integrated GPU</option>
+              <option value="cpu">CPU (all cores)</option>
+            </select>
+          </label>
         </div>
         <div class="site-tray-row">
           <button type="button" data-st="vs-place" disabled>Place observer</button>
@@ -166,7 +173,7 @@ export function mountSiteTray({
         </div>
         <p class="site-tray-status" data-st="vs-status"></p>
         <p class="site-tray-legend" aria-hidden="true">
-          <span class="lg-vs-seen">visible</span><span class="lg-vs-hidden">hidden</span>
+          <span class="lg-vs-seen">seen from low eye</span><span class="lg-vs-high">only from high eye</span><span class="lg-vs-hidden">hidden</span><span class="lg-vs-edge-hi">high-eye edge</span><span class="lg-vs-edge-lo">low-eye edge</span>
         </p>
       </section>
 
@@ -447,6 +454,9 @@ export function mountSiteTray({
     m2 >= 40_469
       ? `${(m2 / 4046.86).toFixed(1)} ac`
       : `${Math.round(m2).toLocaleString()} m²`;
+  const fmtM = (m) => `${Math.round(m * 10) / 10} m`;
+  const fmtSec = (ms) =>
+    ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`;
   function syncViewshed(state = viewshed?.describe()) {
     if (!state) return;
     const has = Boolean(boundary.site);
@@ -456,6 +466,7 @@ export function mountSiteTray({
     $('vs-clear').disabled = !state.on && !state.picking;
     if (document.activeElement !== $('vs-source'))
       $('vs-source').value = state.source;
+    if (state.gpu) $('vs-gpu').value = state.gpu;
     if (state.picking)
       return say(
         'vs-status',
@@ -472,18 +483,35 @@ export function mountSiteTray({
           ? 'Set the eye height, then place an observer'
           : 'Needs a boundary first',
       );
+    const eyes = r.banded
+      ? `${r.lowPct}% seen from ${fmtM(r.lowM)}, ${r.highPct}% from ${fmtM(r.highM)}`
+      : `${r.highPct}% visible from ${fmtM(r.highM)}`;
+    const area = r.banded
+      ? `${fmtArea(r.bothM2)} + ${fmtArea(r.highOnlyM2)} more from the high eye, ${fmtArea(r.hiddenM2)} hidden`
+      : `${fmtArea(r.bothM2)} seen, ${fmtArea(r.hiddenM2)} hidden`;
+    const heights = r.heightsCached
+      ? 'heights ready'
+      : `heights ${fmtSec(r.heightsMs)}`;
     say(
       'vs-status',
-      `${r.visiblePct}% visible (${fmtArea(r.visibleM2)} seen, ${fmtArea(r.hiddenM2)} hidden) · farthest ${r.farthestVisibleM} m · ${r.sourceLabel} · ${r.cellM} m cells`,
+      `${eyes} · ${area} · farthest ${r.farthestHighM} m · ${r.sourceLabel}, ${r.cellM} m cells (${r.cells.toLocaleString()}) · ${heights}, sight lines ${fmtSec(r.computeMs)} on ${r.engine}`,
       'ok',
     );
   }
   const vsOptions = () => {
-    const eyeM = parseHeightM($('vs-eye').value);
+    const eye = parseHeightRange($('vs-eye').value);
     const targetM = parseHeightM($('vs-target').value);
-    if (eyeM == null || targetM == null)
-      throw new Error('Heights like 1.7, 1.7 m or 6 ft (0–1000 m)');
-    return { eyeM, targetM, source: $('vs-source').value };
+    if (!eye || targetM == null)
+      throw new Error(
+        'Eye like 1.7 m or a band like 1-2.5 m; target like 0 or 1.7 m',
+      );
+    return {
+      lowM: eye.lowM,
+      highM: eye.highM,
+      targetM,
+      source: $('vs-source').value,
+      gpu: $('vs-gpu').value,
+    };
   };
   if (!viewshed)
     panel.querySelector('[aria-labelledby="st-vs-h"]').hidden = true;
@@ -508,6 +536,7 @@ export function mountSiteTray({
     for (const key of ['vs-eye', 'vs-target'])
       $(key).addEventListener('change', rerun);
     $('vs-source').addEventListener('change', rerun);
+    $('vs-gpu').addEventListener('change', rerun);
   }
 
   // ---- pop-outs: any section, or the whole tray, into a movable panel ----

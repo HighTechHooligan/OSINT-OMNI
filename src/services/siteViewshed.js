@@ -1,14 +1,18 @@
 /**
- * Viewshed inside the site boundary: put an observer (click, or lat/lon) at
- * an eye height and shade what they can see (green) and can't (red).
+ * Viewshed inside the site boundary: put an observer (click, or lat/lon)
+ * and shade what they can see. Eye height is one value or a band (default
+ * 1–2.5 m): green = seen even from the low eye, amber = seen only from the
+ * high eye, red = hidden. A white outline marks the edge of what the high
+ * eye sees and a cyan secondary outline the edge for the low eye.
  *
  * Height model, in order (`source: 'auto'`):
  *  1. Google 3D mesh (with the photoreal map source on): a surface model, so
  *     buildings and trees block the view.
- *  2. USGS 3DEP bare earth (/api/elevation/3dep): terrain only.
+ *  2. USGS 3DEP bare earth (/api/elevation/3dep), at the contours'
+ *     resolution so both share the server's cache.
  *  3. The globe's terrain provider, when it has real heights.
- * The math is viewshedMath.computeViewshed; only cells inside the boundary
- * are judged, but everything in its bounding box can block a sight line.
+ * Heights load once per boundary; changing heights only re-runs the sight
+ * lines, which go to the GPU (viewshedEngine) or, failing that, CPU workers.
  */
 import * as Cesium from 'cesium';
 import { governorRequestRender } from '../renderGovernor.js';
@@ -16,26 +20,46 @@ import {
   fetchElevationGrid,
   gridDatumShift,
   gridPixelMetres,
+  gridResolutionM,
   gridToLonLat,
 } from './siteContours.js';
-import { boundaryBbox, haversineMeters, pointInRing } from './siteGeometry.js';
 import {
-  VIEWSHED,
+  boundaryAreaM2,
+  boundaryBbox,
+  haversineMeters,
+  pointInRing,
+} from './siteGeometry.js';
+import { createViewshedEngine } from './viewshedEngine.js';
+import {
+  BAND,
   VIEWSHED_DEFAULTS,
-  computeViewshed,
+  bandOutlines,
+  bandStats,
+  downsampleHeights,
   rowRuns,
 } from './viewshedMath.js';
 
 export const SITE_VIEWSHED_DEFAULTS = Object.freeze({
   ...VIEWSHED_DEFAULTS,
+  lowM: 1,
+  highM: 2.5,
   source: 'auto',
-  demMaxCells: 40_000,
-  meshMaxCells: 25_000,
-  sampleBatch: 500,
+  gpu: 'dedicated',
+  meshMaxCells: 40_000,
+  terrainMaxCells: 40_000,
+  sampleBatch: 1000,
+  sampleConcurrency: 4,
 });
 
-const COLORS = { visible: '#3DDC84', hidden: '#FF5252', observer: '#FFFFFF' };
-const ALPHA = { visible: 0.42, hidden: 0.3 };
+const COLORS = {
+  both: '#3DDC84',
+  highOnly: '#FFC400',
+  hidden: '#FF5252',
+  highEdge: '#FFFFFF',
+  lowEdge: '#00E5FF',
+  observer: '#FFFFFF',
+};
+const ALPHA = { both: 0.42, highOnly: 0.45, hidden: 0.3 };
 const M_PER_DEG_LAT = 111_320;
 const SOURCE_LABEL = {
   mesh: 'Google 3D mesh (buildings + trees block)',
@@ -45,7 +69,11 @@ const SOURCE_LABEL = {
 
 export function createSiteViewshed(
   viewer,
-  { boundary, fetchImpl = (...a) => fetch(...a) } = {},
+  {
+    boundary,
+    fetchImpl = (...a) => fetch(...a),
+    createEngine = createViewshedEngine,
+  } = {},
 ) {
   if (!viewer?.scene) throw new TypeError('Viewshed requires a Cesium viewer');
   const scene = viewer.scene;
@@ -55,7 +83,9 @@ export function createSiteViewshed(
     picking: false,
     progress: '',
     error: null,
-    eyeM: SITE_VIEWSHED_DEFAULTS.eyeM,
+    lowM: SITE_VIEWSHED_DEFAULTS.lowM,
+    highM: SITE_VIEWSHED_DEFAULTS.highM,
+    gpu: SITE_VIEWSHED_DEFAULTS.gpu,
     targetM: SITE_VIEWSHED_DEFAULTS.targetM,
     source: SITE_VIEWSHED_DEFAULTS.source,
     observer: null, // [lon, lat]
@@ -71,8 +101,14 @@ export function createSiteViewshed(
   let marker = null;
   let handler = null;
   let cancelPick = null;
-  let gridCache = { key: null, grid: null };
+  let gridCache = { key: null, promise: null };
+  let engine = null;
   let run = 0;
+
+  function getEngine() {
+    engine ??= createEngine({ mode: state.gpu });
+    return engine;
+  }
 
   function hasPhotorealTiles() {
     for (let i = 0; i < scene.primitives.length; i++) {
@@ -88,7 +124,7 @@ export function createSiteViewshed(
         'The viewshed works inside a site boundary. Import a KML, paste coordinates, draw one, or add a radius circle first.',
       );
     const ring = boundary.site.boundary;
-    return { ring, bbox: boundaryBbox(ring) };
+    return { ring, bbox: boundary.site.bbox ?? boundaryBbox(ring) };
   }
 
   /** A regular lon/lat grid over the bbox with about `maxCells` cells. */
@@ -107,29 +143,38 @@ export function createSiteViewshed(
     };
   }
 
+  /** Mesh heights, several batches in flight at once. */
   async function sampleMesh(grid) {
     const B = SITE_VIEWSHED_DEFAULTS.sampleBatch;
     const n = grid.width * grid.height;
-    for (let s = 0; s < n; s += B) {
-      const batch = [];
-      for (let i = s; i < Math.min(n, s + B); i++) {
-        const [lon, lat] = gridToLonLat(
-          grid,
-          i % grid.width,
-          Math.floor(i / grid.width),
-        );
-        batch.push(Cesium.Cartographic.fromDegrees(lon, lat));
+    let next = 0;
+    let done = 0;
+    const lane = async () => {
+      while (next < n) {
+        const s = next;
+        next += B;
+        const batch = [];
+        for (let i = s; i < Math.min(n, s + B); i++) {
+          const [lon, lat] = gridToLonLat(
+            grid,
+            i % grid.width,
+            Math.floor(i / grid.width),
+          );
+          batch.push(Cesium.Cartographic.fromDegrees(lon, lat));
+        }
+        try {
+          const out = await scene.sampleHeightMostDetailed(batch);
+          out.forEach((c, j) => (grid.values[s + j] = c?.height ?? Number.NaN));
+        } catch {
+          // leave NaN
+        }
+        done += batch.length;
+        say(`Sampling the 3D mesh… ${Math.round((done / n) * 100)}%`);
       }
-      try {
-        const out = await scene.sampleHeightMostDetailed(batch);
-        out.forEach((c, j) => (grid.values[s + j] = c?.height ?? Number.NaN));
-      } catch {
-        // leave NaN
-      }
-      say(
-        `Sampling the 3D mesh… ${Math.round((Math.min(n, s + B) / n) * 100)}%`,
-      );
-    }
+    };
+    await Promise.all(
+      Array.from({ length: SITE_VIEWSHED_DEFAULTS.sampleConcurrency }, lane),
+    );
     return grid;
   }
 
@@ -150,27 +195,57 @@ export function createSiteViewshed(
     return grid;
   }
 
-  async function loadDem(bbox) {
-    const midLat = ((bbox.minLat + bbox.maxLat) / 2) * (Math.PI / 180);
-    const areaM2 =
-      (bbox.maxLon - bbox.minLon) *
-      M_PER_DEG_LAT *
-      Math.cos(midLat) *
-      (bbox.maxLat - bbox.minLat) *
-      M_PER_DEG_LAT;
-    const res = Math.max(
-      1,
-      Math.ceil(Math.sqrt(areaM2 / SITE_VIEWSHED_DEFAULTS.demMaxCells)),
-    );
-    const grid = await fetchElevationGrid(bbox, res, { fetchImpl });
+  /** 3DEP at the contours' resolution: a cache hit when contours ran. */
+  async function loadDem(area) {
+    const res = gridResolutionM(boundaryAreaM2(area.ring));
+    const grid = await fetchElevationGrid(area.bbox, res, { fetchImpl });
     grid.shift = gridDatumShift(grid);
     return grid;
   }
 
-  /** Height grid for the area, cached per boundary + source. */
-  async function loadGrid(area, source) {
-    const key = `${source}|${area.ring.flat().join(',')}`;
-    if (gridCache.key === key) return gridCache.grid;
+  /** Shrink a grid to the engine's cell budget, trimming its bbox to match. */
+  function fitToBudget(grid, maxCells) {
+    const cells = grid.width * grid.height;
+    if (cells <= maxCells) return grid;
+    const f = Math.ceil(Math.sqrt(cells / maxCells));
+    const d = downsampleHeights(grid.values, grid.width, grid.height, f);
+    const dx = (grid.bbox.maxLon - grid.bbox.minLon) / grid.width;
+    const dy = (grid.bbox.maxLat - grid.bbox.minLat) / grid.height;
+    return {
+      ...grid,
+      values: d.values,
+      width: d.width,
+      height: d.height,
+      bbox: {
+        minLon: grid.bbox.minLon,
+        maxLat: grid.bbox.maxLat,
+        maxLon: grid.bbox.minLon + d.width * f * dx,
+        minLat: grid.bbox.maxLat - d.height * f * dy,
+      },
+    };
+  }
+
+  /**
+   * Height grid for the area, cached per boundary + source + cell budget.
+   * The promise is cached, so a load started while the user is still
+   * choosing the observer spot is reused.
+   */
+  function loadGrid(area, source) {
+    const budget = getEngine().maxCells;
+    const key = `${source}|${budget}|${area.ring.flat().join(',')}`;
+    if (gridCache.key !== key) {
+      const promise = fetchGrid(area, source, budget);
+      gridCache = { key, promise };
+      promise.catch(() => {
+        if (gridCache.promise === promise)
+          gridCache = { key: null, promise: null };
+      });
+    }
+    return gridCache.promise;
+  }
+
+  async function fetchGrid(area, source, budget) {
+    const t0 = performance.now();
     const tries =
       source === 'mesh'
         ? ['mesh']
@@ -185,15 +260,21 @@ export function createSiteViewshed(
           if (!hasPhotorealTiles())
             throw new Error('needs the Google 3D map source');
           grid = await sampleMesh(
-            lonLatGrid(area.bbox, SITE_VIEWSHED_DEFAULTS.meshMaxCells),
+            lonLatGrid(
+              area.bbox,
+              Math.min(budget, SITE_VIEWSHED_DEFAULTS.meshMaxCells),
+            ),
           );
         } else if (kind === 'dem') {
           say('Loading USGS 3DEP elevation…');
-          grid = await loadDem(area.bbox);
+          grid = fitToBudget(await loadDem(area), budget);
         } else {
           say('Sampling globe terrain…');
           grid = await sampleTerrain(
-            lonLatGrid(area.bbox, SITE_VIEWSHED_DEFAULTS.demMaxCells),
+            lonLatGrid(
+              area.bbox,
+              Math.min(budget, SITE_VIEWSHED_DEFAULTS.terrainMaxCells),
+            ),
           );
         }
         if (!grid.values.some(Number.isFinite))
@@ -208,7 +289,8 @@ export function createSiteViewshed(
             )
               ? 1
               : 0;
-        gridCache = { key, grid };
+        grid.loadMs = performance.now() - t0;
+        grid.doneAt = performance.now();
         return grid;
       } catch (error) {
         errors.push(`${SOURCE_LABEL[kind]}: ${error?.message || error}`);
@@ -240,29 +322,60 @@ export function createSiteViewshed(
     marker = null;
   }
 
-  /** The result as one image (row 0 = north), coloured per cell. */
-  function overlayImage(grid, vis) {
-    const canvas = document.createElement('canvas');
-    canvas.width = grid.width;
-    canvas.height = grid.height;
-    const ctx = canvas.getContext('2d');
-    const img = ctx.createImageData(grid.width, grid.height);
+  /**
+   * The result as one image (row 0 = north): a colour per cell, with the
+   * outlines painted in. Painting them here costs nothing per frame, where
+   * draped polylines slowed every redraw.
+   */
+  function overlayImage(grid, vis, banded) {
+    const cells = document.createElement('canvas');
+    cells.width = grid.width;
+    cells.height = grid.height;
+    const cctx = cells.getContext('2d');
+    const img = cctx.createImageData(grid.width, grid.height);
     const rgba = (css, alpha) => {
       const c = Cesium.Color.fromCssColorString(css);
       return [c.red * 255, c.green * 255, c.blue * 255, alpha * 255];
     };
-    const seen = rgba(COLORS.visible, ALPHA.visible);
-    const hidden = rgba(COLORS.hidden, ALPHA.hidden);
+    const palette = [
+      null,
+      rgba(COLORS.hidden, ALPHA.hidden),
+      rgba(COLORS.highOnly, ALPHA.highOnly),
+      rgba(COLORS.both, ALPHA.both),
+    ];
     for (let i = 0; i < vis.length; i++) {
-      const px =
-        vis[i] === VIEWSHED.VISIBLE
-          ? seen
-          : vis[i] === VIEWSHED.HIDDEN
-            ? hidden
-            : null;
+      const px = palette[vis[i]];
       if (px) img.data.set(px, i * 4);
     }
-    ctx.putImageData(img, 0, 0);
+    cctx.putImageData(img, 0, 0);
+    // Upscale so outlines can be thinner than a cell.
+    const scale = Math.max(
+      1,
+      Math.min(4, Math.floor(4096 / Math.max(grid.width, grid.height))),
+    );
+    const canvas = document.createElement('canvas');
+    canvas.width = grid.width * scale;
+    canvas.height = grid.height * scale;
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(cells, 0, 0, canvas.width, canvas.height);
+    const levels = banded
+      ? [
+          ['high', COLORS.highEdge],
+          ['low', COLORS.lowEdge],
+        ]
+      : [['high', COLORS.highEdge]];
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = Math.max(1.5, scale * 0.9);
+    for (const [level, css] of levels) {
+      ctx.strokeStyle = css;
+      ctx.beginPath();
+      for (const line of bandOutlines(vis, grid.width, grid.height, level))
+        line.forEach(([x, y], k) =>
+          ctx[k ? 'lineTo' : 'moveTo']((x + 0.5) * scale, (y + 0.5) * scale),
+        );
+      ctx.stroke();
+    }
     return canvas;
   }
 
@@ -271,7 +384,7 @@ export function createSiteViewshed(
    * row run, which slowed every frame. Strips remain the fallback where
    * ground primitives can't take materials.
    */
-  function drawImage(grid, vis) {
+  function drawImage(grid, vis, banded) {
     const [west, north] = gridToLonLat(grid, -0.5, -0.5);
     const [east, south] = gridToLonLat(
       grid,
@@ -287,7 +400,7 @@ export function createSiteViewshed(
       }),
       appearance: new Cesium.MaterialAppearance({
         material: Cesium.Material.fromType('Image', {
-          image: overlayImage(grid, vis),
+          image: overlayImage(grid, vis, banded),
         }),
         flat: true,
         translucent: true,
@@ -298,9 +411,10 @@ export function createSiteViewshed(
     scene.groundPrimitives.add(overlay);
   }
 
-  function draw(grid, vis, observer) {
+  function draw(grid, vis, observer, banded) {
     removeOverlay();
-    if (Cesium.GroundPrimitive.supportsMaterials(scene)) drawImage(grid, vis);
+    if (Cesium.GroundPrimitive.supportsMaterials(scene))
+      drawImage(grid, vis, banded);
     else drawStrips(grid, vis);
     drawMarker(observer);
     governorRequestRender('site-viewshed');
@@ -312,7 +426,12 @@ export function createSiteViewshed(
     const instances = rowRuns(vis, grid.width, grid.height).map((run) => {
       const [west, lat] = gridToLonLat(grid, run.col0, run.row);
       const [east] = gridToLonLat(grid, run.col1, run.row);
-      const seen = run.value === VIEWSHED.VISIBLE;
+      const key =
+        run.value === BAND.BOTH
+          ? 'both'
+          : run.value === BAND.HIGH_ONLY
+            ? 'highOnly'
+            : 'hidden';
       return new Cesium.GeometryInstance({
         geometry: new Cesium.RectangleGeometry({
           rectangle: Cesium.Rectangle.fromDegrees(
@@ -324,9 +443,7 @@ export function createSiteViewshed(
         }),
         attributes: {
           color: Cesium.ColorGeometryInstanceAttribute.fromColor(
-            Cesium.Color.fromCssColorString(
-              seen ? COLORS.visible : COLORS.hidden,
-            ).withAlpha(seen ? ALPHA.visible : ALPHA.hidden),
+            Cesium.Color.fromCssColorString(COLORS[key]).withAlpha(ALPHA[key]),
           ),
         },
       });
@@ -359,15 +476,31 @@ export function createSiteViewshed(
     });
   }
 
+  function applyOptions({ lowM, highM, eyeM, targetM, source, gpu } = {}) {
+    if (eyeM != null && lowM == null && highM == null) lowM = highM = eyeM;
+    const lo = lowM != null ? Number(lowM) : state.lowM;
+    const hi = highM != null ? Number(highM) : lowM != null ? lo : state.highM;
+    if (!(lo >= 0) || !(hi >= 0)) throw new Error('Eye heights must be ≥ 0 m');
+    state.lowM = Math.min(lo, hi);
+    state.highM = Math.max(lo, hi);
+    if (targetM != null && Number.isFinite(Number(targetM)))
+      state.targetM = Number(targetM);
+    if (source) state.source = source;
+    if (gpu && gpu !== state.gpu) {
+      state.gpu = gpu;
+      engine?.setMode(gpu);
+      gridCache = { key: null, promise: null }; // the cell budget may change
+    }
+  }
+
   /**
    * Compute and draw the viewshed from `at` ([lon, lat]; default: the last
-   * observer). Options persist for the next run.
+   * observer). Options persist for the next run. `eyeM` sets one height;
+   * `lowM`/`highM` set the band.
    */
-  async function compute({ at, eyeM, targetM, source } = {}) {
+  async function compute({ at, ...options } = {}) {
     const area = requireArea();
-    if (eyeM != null) state.eyeM = Number(eyeM);
-    if (targetM != null) state.targetM = Number(targetM);
-    if (source) state.source = source;
+    applyOptions(options);
     const observer = at ?? state.observer;
     if (!observer) throw new Error('Place an observer first.');
     if (!pointInRing(observer, area.ring))
@@ -378,45 +511,57 @@ export function createSiteViewshed(
     state.error = null;
     emit();
     try {
+      const t0 = performance.now();
       const grid = await loadGrid(area, state.source);
+      // Heights that finished loading before this run (cached, or fetched
+      // while the user was picking the spot) cost this run nothing.
+      const heightsCached = grid.doneAt <= t0;
       if (id !== run) return describe();
-      say('Tracing sight lines…');
+      say(`Tracing sight lines on the ${getEngine().kind}…`);
       await new Promise((r) => setTimeout(r, 0)); // let the status paint
-      const px = grid.kind === 'dem' ? gridPixelMetres(grid) : null;
-      const cellXM =
-        px?.pxEastM ??
-        ((grid.bbox.maxLon - grid.bbox.minLon) / grid.width) *
-          M_PER_DEG_LAT *
-          Math.cos(
-            ((grid.bbox.minLat + grid.bbox.maxLat) / 2) * (Math.PI / 180),
-          );
-      const cellYM =
-        px?.pxSouthM ??
-        ((grid.bbox.maxLat - grid.bbox.minLat) / grid.height) * M_PER_DEG_LAT;
+      const { pxEastM: cellXM, pxSouthM: cellYM } = gridPixelMetres(grid);
       const cell = cellAt(grid, observer);
-      const out = computeViewshed({
+      const banded = state.highM > state.lowM;
+      const {
+        codes,
+        engine: used,
+        ms,
+      } = await getEngine().compute({
         heights: grid.values,
         width: grid.width,
         height: grid.height,
         cellXM,
         cellYM,
         observer: cell,
-        eyeM: state.eyeM,
+        lowM: state.lowM,
+        highM: state.highM,
         targetM: state.targetM,
         mask: grid.mask,
       });
+      if (id !== run) return describe();
+      const stats = bandStats(codes, grid.width, cellXM, cellYM, cell);
       const cellArea = cellXM * cellYM;
       state.result = {
-        ...out.stats,
-        visibleM2: Math.round(out.stats.visible * cellArea),
-        hiddenM2: Math.round(out.stats.hidden * cellArea),
+        ...stats,
+        banded,
+        lowM: state.lowM,
+        highM: state.highM,
+        bothM2: Math.round(stats.both * cellArea),
+        highOnlyM2: Math.round(stats.highOnly * cellArea),
+        hiddenM2: Math.round(stats.hidden * cellArea),
         cellM: Math.round(Math.sqrt(cellArea) * 10) / 10,
+        cells: grid.width * grid.height,
         source: grid.kind,
         sourceLabel: SOURCE_LABEL[grid.kind],
-        observerGroundM: Math.round(out.observerGroundM * 10) / 10,
+        observerGroundM:
+          Math.round(grid.values[cell.row * grid.width + cell.col] * 10) / 10,
         observer: [...observer],
+        engine: used,
+        heightsMs: Math.round(grid.loadMs),
+        heightsCached,
+        computeMs: Math.round(ms),
       };
-      draw(grid, out.grid, observer);
+      draw(grid, codes, observer, banded);
       state.on = true;
       return describe();
     } catch (error) {
@@ -437,6 +582,9 @@ export function createSiteViewshed(
     stopPicking();
     state.picking = true;
     state.error = null;
+    applyOptions(options);
+    // Start loading heights now, while the user picks the spot.
+    loadGrid(requireArea(), state.source).catch(() => {});
     emit();
     return new Promise((resolve, reject) => {
       handler = new Cesium.ScreenSpaceEventHandler(scene.canvas);
@@ -484,12 +632,8 @@ export function createSiteViewshed(
     emit();
   }
 
-  function setOptions({ eyeM, targetM, source } = {}) {
-    if (eyeM != null && Number.isFinite(Number(eyeM)))
-      state.eyeM = Number(eyeM);
-    if (targetM != null && Number.isFinite(Number(targetM)))
-      state.targetM = Number(targetM);
-    if (source) state.source = source;
+  function setOptions(options = {}) {
+    applyOptions(options);
     emit();
   }
 
@@ -505,16 +649,21 @@ export function createSiteViewshed(
       picking: state.picking,
       progress: state.progress,
       error: state.error,
-      eyeM: state.eyeM,
+      lowM: state.lowM,
+      highM: state.highM,
+      eyeM: state.highM,
       targetM: state.targetM,
       source: state.source,
+      gpu: state.gpu,
+      engine: engine ? engine.kind : null,
+      renderer: engine?.renderer ?? null,
       observer: state.observer ? [...state.observer] : null,
       result: state.result ? { ...state.result } : null,
     };
   }
 
   const offBoundary = boundary?.onChange?.(() => {
-    gridCache = { key: null, grid: null };
+    gridCache = { key: null, promise: null };
     if (!boundary.site && (state.on || state.picking)) clear();
   });
 
@@ -532,6 +681,7 @@ export function createSiteViewshed(
     },
     destroy() {
       clear();
+      engine?.destroy();
       offBoundary?.();
       listeners.clear();
     },

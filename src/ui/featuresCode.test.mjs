@@ -335,18 +335,33 @@ test('site, clear and cls report state', async () => {
   assert.equal(h.cleared(), 1);
 });
 
-test('viewshed: at lat,lon with heights, click placement, source and off', async () => {
+test('viewshed: at lat,lon with a band, click placement, source, gpu and off', async () => {
   const calls = [];
-  const state = { eyeM: 1.7, targetM: 0, observer: null, result: null };
+  const state = {
+    lowM: 1,
+    highM: 2.5,
+    targetM: 0,
+    gpu: 'dedicated',
+    observer: null,
+    result: null,
+  };
   const done = (opts) => {
-    Object.assign(state, opts.eyeM != null ? { eyeM: opts.eyeM } : {});
-    Object.assign(state, opts.targetM != null ? { targetM: opts.targetM } : {});
+    for (const k of ['lowM', 'highM', 'targetM'])
+      if (opts[k] != null) state[k] = opts[k];
     state.observer = opts.at ?? [1, 2];
     state.result = {
-      visiblePct: 62.5,
-      farthestVisibleM: 410,
+      banded: state.highM > state.lowM,
+      lowM: state.lowM,
+      highM: state.highM,
+      lowPct: 40,
+      highPct: 62.5,
+      farthestHighM: 410,
       sourceLabel: 'USGS 3DEP bare earth',
-      cellM: 3.4,
+      cellM: 1,
+      heightsMs: 1200,
+      heightsCached: false,
+      computeMs: 80,
+      engine: 'GPU (Test GPU)',
     };
     return { ...state };
   };
@@ -354,22 +369,37 @@ test('viewshed: at lat,lon with heights, click placement, source and off', async
     describe: () => ({ ...state }),
     compute: async (opts = {}) => (calls.push(['compute', opts]), done(opts)),
     pickObserver: async (opts) => (calls.push(['pick', opts]), done(opts)),
-    setOptions: (opts) => calls.push(['setOptions', opts]),
+    setOptions: (opts) => {
+      calls.push(['setOptions', opts]);
+      Object.assign(state, opts);
+    },
     clear: () => calls.push(['clear']),
   };
   const { site } = fakeSite();
   const h = harness({ site: { ...site, viewshed } });
-  await h.run('viewshed 44.84,-93.36 10m 6ft');
+  await h.run('viewshed 44.84,-93.36 1-2.5m 6ft');
   assert.deepEqual(calls[0][1].at, [-93.36, 44.84]);
-  assert.equal(calls[0][1].eyeM, 10);
+  assert.equal(calls[0][1].lowM, 1);
+  assert.equal(calls[0][1].highM, 2.5);
   assert.ok(Math.abs(calls[0][1].targetM - 1.8288) < 1e-9);
-  assert.match(h.lines.at(-1).text, /62.5% of the site visible from 10.0 m/);
+  assert.match(
+    h.lines.at(-1).text,
+    /40% of the site seen from 1 m, 62.5% from 2.5 m/,
+  );
+  assert.match(
+    h.lines.at(-1).text,
+    /heights 1.20 s, sight lines 0.08 s on GPU/,
+  );
   await h.run('viewshed 30ft');
   assert.equal(calls[1][0], 'pick');
-  assert.ok(Math.abs(calls[1][1].eyeM - 9.144) < 1e-9);
+  assert.ok(Math.abs(calls[1][1].highM - 9.144) < 1e-9);
   await h.run('viewshed mesh');
   assert.deepEqual(calls[2], ['setOptions', { source: 'mesh' }]);
   assert.equal(calls[3][0], 'compute');
+  await h.run('viewshed gpu integrated');
+  assert.deepEqual(calls[4], ['setOptions', { gpu: 'integrated' }]);
+  await h.run('viewshed gpu');
+  assert.match(h.lines.at(-1).text, /Computing on: integrated/);
   await h.run('viewshed tall');
   assert.equal(h.lines.at(-1).tone, 'err');
   await h.run('viewshed off');
