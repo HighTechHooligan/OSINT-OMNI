@@ -43,6 +43,11 @@ Viewshed (only inside the site boundary)
   viewshed mesh | dem | auto  heights: 3D mesh (buildings + trees block),
                            USGS bare earth, or auto (mesh when it is on)
   viewshed off             clear the viewshed
+Aircraft (or double-click a plane on the globe)
+  plane [callsign|tail|hex]  ride in its cockpit and open its details;
+                           no name = the plane you are following
+  plane info [name]        open the details pop-out only
+  plane exit               leave the cockpit view
 Camera
   zoom                     fly to the boundary
   orbit [sec]              live orbit, seconds per revolution (default 24)
@@ -125,6 +130,7 @@ export function createFeatureCommands({
   viewer,
   getDataManager = () => null,
   panels = null,
+  aircraft = null,
   openPaste = null,
   allowEval = false,
   recordTitle = 'DJI LIDAR L2+ORTHO',
@@ -439,6 +445,39 @@ export function createFeatureCommands({
       buildings.pick(record.id);
       print(`Opened dossier for ${record.tags.name || record.id}`, 'ok');
     },
+    async plane([first, ...rest]) {
+      if (!aircraft) return print('Aircraft details are not available', 'err');
+      const action = String(first ?? '').toLowerCase();
+      if (action === 'exit') {
+        return aircraft.exitCockpit()
+          ? print('Left the cockpit view', 'ok')
+          : print('Not in the cockpit view', 'dim');
+      }
+      const infoOnly = action === 'info';
+      const query = (infoOnly ? rest : [first, ...rest])
+        .filter(Boolean)
+        .join(' ');
+      const target = aircraft.find(query);
+      if (!target)
+        return print(
+          query
+            ? `No aircraft matching "${query}" in the Flights or Military layers`
+            : 'Follow a plane first, or name one: plane <callsign|tail|hex>',
+          'err',
+        );
+      const label = `${target.id.toUpperCase()} (${target.layerId})`;
+      if (infoOnly) {
+        aircraft.openDetails(target);
+        return print(`Opened details for ${label}`, 'ok');
+      }
+      const result = await aircraft.flyIn(target);
+      print(
+        result.ok
+          ? `In the cockpit of ${label}; details open`
+          : `Opened details for ${label}; cockpit unavailable: ${result.error}`,
+        result.ok ? 'ok' : 'err',
+      );
+    },
     panels([action]) {
       if (String(action).toLowerCase() !== 'close')
         return print('Usage: panels close', 'err');
@@ -514,6 +553,7 @@ export function mountFeaturesCode({
   getDataManager,
   dock,
   panels,
+  aircraft,
 } = {}) {
   const host = dock ?? document.getElementById('command-dock');
   const item = document.createElement('div');
@@ -584,6 +624,7 @@ export function mountFeaturesCode({
     pickFile,
     viewer,
     panels,
+    aircraft,
     openPaste: panels
       ? () =>
           openCoordinatePaste({

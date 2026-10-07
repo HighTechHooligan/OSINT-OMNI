@@ -375,3 +375,33 @@ test('viewshed: at lat,lon with heights, click placement, source and off', async
   await h.run('viewshed off');
   assert.deepEqual(calls.at(-1), ['clear']);
 });
+
+test('plane flies into the cockpit, opens details, and exits', async () => {
+  const calls = [];
+  const aircraft = {
+    find: (q) =>
+      q === 'UAL123' || q === '' ? { layerId: 'flights', id: 'a1b2c3' } : null,
+    flyIn: async (t) => {
+      calls.push(['flyIn', t.id]);
+      return { ok: true };
+    },
+    openDetails: (t) => calls.push(['openDetails', t.id]),
+    exitCockpit: () => {
+      calls.push(['exit']);
+      return true;
+    },
+  };
+  const h = harness({ aircraft });
+  await h.run('plane UAL123');
+  await h.run('plane info');
+  await h.run('plane NOPE');
+  await h.run('plane exit');
+  assert.deepEqual(calls, [
+    ['flyIn', 'a1b2c3'],
+    ['openDetails', 'a1b2c3'],
+    ['exit'],
+  ]);
+  assert.match(h.lines[0].text, /cockpit of A1B2C3/);
+  assert.match(h.lines[2].text, /No aircraft matching "NOPE"/);
+  assert.equal(h.lines[2].tone, 'err');
+});

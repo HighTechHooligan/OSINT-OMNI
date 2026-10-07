@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+- **Aircraft cockpit and details**: double-click a plane (civil or military)
+  to ride in its cockpit view and open a pop-out with the live flight
+  (callsign, route, altitude, speed, heading), the airframe (type, owner,
+  photo from adsbdb), and the model's history: Wikipedia summary, first
+  flight / service entry / number built from Wikidata, hand-checked notable
+  events for common airliners, and Wikipedia articles that mention the tail
+  number. Features Code `plane [callsign|tail|hex]`, `plane info`,
+  `plane exit`. New server route `/api/aircraft/trivia`.
 - **Viewshed** (SITE → Viewshed, Features Code `viewshed`): place an
   observer inside the site boundary at an eye height (and optional target
   height) and the area they can see is shaded green, the rest red, with the
