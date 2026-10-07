@@ -2074,6 +2074,8 @@
       "src/services/datum.js",
       "src/services/meshAlign.js",
       "src/ui/siteTray.js",
+      "src/services/phoneLink.js",
+      "src/ui/phoneTray.js",
       "src/app/layers/osmStreets.js",
       "src/layers/osmStreets/index.js",
       "src/layers/osmStreets/records.js",
