@@ -7,6 +7,7 @@ import { elevation3depProxy } from './elevation3dep.js';
 import { alprTilesProxy } from './alprTiles.js';
 import { osmTilesProxy } from './osmTiles.js';
 import { adsbdbProxy } from './aircraft/enrichment.js';
+import { aircraftTriviaProxy } from './aircraft/trivia.js';
 import { overpassProxy } from './overpass.js';
 import { militaryInstallationsProxy } from './military-installations.js';
 import { regionalBriefProxy } from './regional/briefing.js';
@@ -45,6 +46,7 @@ function localProviderPlugins({ realtime } = {}) {
     alprTilesProxy(),
     osmTilesProxy(),
     adsbdbProxy(),
+    aircraftTriviaProxy(),
     overpassProxy(),
     militaryInstallationsProxy(),
     regionalBriefProxy(),

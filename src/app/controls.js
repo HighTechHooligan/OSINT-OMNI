@@ -7,9 +7,11 @@ import { createSiteOrbit } from '../services/siteOrbit.js';
 import { createSiteContours } from '../services/siteContours.js';
 import { createSiteBuildings } from '../services/siteBuildings.js';
 import { createSiteViewshed } from '../services/siteViewshed.js';
+import { createAircraftDossier } from '../services/aircraftDossier.js';
 import { createLocationResearch } from '../tools/locationResearch.js';
 import { createPopoutPanels } from '../ui/popoutPanels.js';
 import { openDossier } from '../ui/dossierPanel.js';
+import { openAircraftPanel } from '../ui/aircraftPanel.js';
 import { mountFeaturesCode } from '../ui/featuresCode.js';
 import { mountSiteTray } from '../ui/siteTray.js';
 
@@ -79,12 +81,20 @@ export function createApplicationControls({
   defer(() => siteContours.destroy());
   defer(() => siteOrbit.destroy());
   defer(() => siteBoundary.destroy());
+  // Double-click a plane: ride in its cockpit and open its pop-out.
+  const aircraft = createAircraftDossier(viewer, {
+    getStyleManager: () => styleManager,
+    getDataManager: () => styleManager._dataManager ?? null,
+    openPanel: (spec) => openAircraftPanel({ panels: popoutPanels, ...spec }),
+  });
+  defer(() => aircraft.destroy());
   const featuresCode = mountFeaturesCode({
     viewer,
     site,
     // The data manager attaches after controls start; resolve it lazily.
     getDataManager: () => styleManager._dataManager ?? null,
     panels: popoutPanels,
+    aircraft,
   });
   defer(() => featuresCode.destroy());
   const siteTray = mountSiteTray({
@@ -118,5 +128,6 @@ export function createApplicationControls({
     featuresCode,
     siteTray,
     popoutPanels,
+    aircraft,
   };
 }

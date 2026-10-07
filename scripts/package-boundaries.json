@@ -2089,7 +2089,11 @@
       "src/ui/dossierPanel.js",
       "src/ui/popoutPanels.js",
       "src/services/surveyGeometry.js",
-      "src/ui/coordinatePaste.js"
+      "src/ui/coordinatePaste.js",
+      "src/services/aircraftTypes.js",
+      "src/services/aircraftInfo.js",
+      "src/services/aircraftDossier.js",
+      "src/ui/aircraftPanel.js"
     ],
     "external": [
       "hls.js",

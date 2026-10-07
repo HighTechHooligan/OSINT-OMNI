@@ -943,5 +943,12 @@
   "src/ui/styles/popout-panels.css",
   "src/services/surveyGeometry.js",
   "src/services/surveyGeometry.test.mjs",
-  "src/ui/coordinatePaste.js"
+  "src/ui/coordinatePaste.js",
+  "server/providers/aircraft/trivia.js",
+  "src/tooling/aircraftTriviaProxy.test.mjs",
+  "src/services/aircraftTypes.js",
+  "src/services/aircraftInfo.js",
+  "src/services/aircraftInfo.test.mjs",
+  "src/services/aircraftDossier.js",
+  "src/ui/aircraftPanel.js"
 ]
