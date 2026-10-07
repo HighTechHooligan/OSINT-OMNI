@@ -78,3 +78,14 @@ export const SURFACE_ABOVE_FLOOR_M = 40;
 
 /** OSM attribution may collapse after five seconds; full credit stays in Data attribution. */
 export const CREDIT_DISPLAY_MS = 5000;
+
+/**
+ * Zoomed-out overview: wider than a city, the layer draws every mapped camera
+ * in view as a plain dot from the extract's z3-z8 tiles (geometry only), using
+ * the finest zoom whose tiles for the view fit OVERVIEW_MAX_TILES.
+ */
+export const OVERVIEW_MIN_ZOOM = 3;
+export const OVERVIEW_MAX_ZOOM = 8;
+export const OVERVIEW_MAX_TILES = 48;
+export const OVERVIEW_POINT_LIMIT = 250_000;
+export const OVERVIEW_POINT_PX = 5;
