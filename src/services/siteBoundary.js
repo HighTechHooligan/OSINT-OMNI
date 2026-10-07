@@ -768,6 +768,7 @@ export function createSiteBoundary(viewer) {
     },
     describe,
     requireSite,
+    pickLonLat,
     setSite,
     setPoints,
     setCircle,

@@ -6,6 +6,7 @@ import { createSiteBoundary } from '../services/siteBoundary.js';
 import { createSiteOrbit } from '../services/siteOrbit.js';
 import { createSiteContours } from '../services/siteContours.js';
 import { createSiteBuildings } from '../services/siteBuildings.js';
+import { createSiteViewshed } from '../services/siteViewshed.js';
 import { createLocationResearch } from '../tools/locationResearch.js';
 import { createPopoutPanels } from '../ui/popoutPanels.js';
 import { openDossier } from '../ui/dossierPanel.js';
@@ -66,11 +67,14 @@ export function createApplicationControls({
       }),
   });
   defer(() => siteBuildings.destroy());
+  const siteViewshed = createSiteViewshed(viewer, { boundary: siteBoundary });
+  defer(() => siteViewshed.destroy());
   const site = Object.freeze({
     boundary: siteBoundary,
     orbit: siteOrbit,
     contours: siteContours,
     buildings: siteBuildings,
+    viewshed: siteViewshed,
   });
   defer(() => siteContours.destroy());
   defer(() => siteOrbit.destroy());

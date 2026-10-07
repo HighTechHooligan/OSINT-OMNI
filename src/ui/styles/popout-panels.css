@@ -304,3 +304,49 @@
   margin-left: 0.3rem;
   padding: 0.15rem 0.3rem;
 }
+
+/* SITE pop-outs: the ⧉ buttons and sections hosted in a pop-out panel */
+.site-tray-pop {
+  margin-left: auto;
+  padding: 0 0.3rem;
+  color: var(--text-secondary, rgba(232, 234, 237, 0.6));
+  background: none;
+  border: 0;
+  font-size: 0.8rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.site-tray-pop:hover,
+.site-tray-pop:focus-visible {
+  color: var(--accent);
+}
+
+.site-tray-head .site-tray-pop {
+  margin-right: 0.4rem;
+}
+
+.site-tray-section h3 {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+}
+
+.site-tray-popbody .site-tray-section,
+.site-tray-popbody .site-tray-body {
+  border-bottom: 0;
+  font-size: 12px;
+}
+
+.site-tray-popbody .site-tray-body {
+  padding: 0;
+  overflow: visible;
+}
+
+.site-tray-legend .lg-vs-seen::before {
+  background: #3ddc84;
+}
+
+.site-tray-legend .lg-vs-hidden::before {
+  background: #ff5252;
+}

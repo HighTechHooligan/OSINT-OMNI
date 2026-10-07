@@ -8,6 +8,7 @@
 import { normalizeDatum } from '../services/contourMath.js';
 
 import { parseLength } from '../services/surveyGeometry.js';
+import { parseHeightM } from '../services/viewshedMath.js';
 import { openCoordinatePaste } from './coordinatePaste.js';
 
 export const FEATURES_CODE_HELP = `Every feature here is also in the SITE panel in the dock.
@@ -36,6 +37,12 @@ Buildings (only inside the site boundary)
   dossier <n>              open the dossier for building n of "buildings list"
   buildings list           list what building mode found
   panels close             close every pop-out panel
+Viewshed (only inside the site boundary)
+  viewshed [eye]           click the observer spot; eye height (1.7 m, 30 ft)
+  viewshed <lat,lon> [eye] [target]  observer at lat,lon; target 0 = ground
+  viewshed mesh | dem | auto  heights: 3D mesh (buildings + trees block),
+                           USGS bare earth, or auto (mesh when it is on)
+  viewshed off             clear the viewshed
 Camera
   zoom                     fly to the boundary
   orbit [sec]              live orbit, seconds per revolution (default 24)
@@ -122,7 +129,15 @@ export function createFeatureCommands({
   allowEval = false,
   recordTitle = 'DJI LIDAR L2+ORTHO',
 }) {
-  const { boundary, orbit, contours, buildings } = site;
+  const { boundary, orbit, contours, buildings, viewshed } = site;
+  function viewshedLine(state) {
+    const r = state.result;
+    if (!r) return print('No viewshed', 'err');
+    print(
+      `Viewshed: ${r.visiblePct}% of the site visible from ${state.eyeM.toFixed(1)} m eye height (target ${state.targetM.toFixed(1)} m) · farthest ${r.farthestVisibleM} m · ${r.sourceLabel}, ${r.cellM} m cells`,
+      'ok',
+    );
+  }
   const loadedLine = (summary) =>
     print(`Loaded ${describeSite(summary)}`, 'ok');
 
@@ -377,6 +392,44 @@ export function createFeatureCommands({
       const c = state.counts;
       line.textContent = `${c.buildings} buildings · ${c.roads} roads · ${c.parks} parks (${state.source})${state.osmError ? ` · OSM: ${state.osmError}` : ''}. Click one for its dossier.`;
       line.className = 'fc-ok';
+    },
+    async viewshed(args) {
+      if (!viewshed) return print('Viewshed is not available', 'err');
+      const [first, ...rest] = args;
+      if (switchArg(first) === false) {
+        viewshed.clear();
+        return print('Viewshed cleared', 'ok');
+      }
+      if (['mesh', 'dem', 'auto'].includes(first)) {
+        viewshed.setOptions({ source: first });
+        if (!viewshed.describe().observer)
+          return print(
+            `Viewshed heights: ${first}. Run "viewshed" to place an observer.`,
+            'ok',
+          );
+        return viewshedLine(await viewshed.compute());
+      }
+      let at = null;
+      let heights = args;
+      if (first?.includes(',')) {
+        const [lat, lon] = first.split(',').map(Number);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon))
+          return print('Observer as lat,lon, e.g. 44.8402,-93.3666', 'err');
+        at = [lon, lat];
+        heights = rest;
+      }
+      const [eyeText, targetText] = heights;
+      const eyeM = eyeText != null ? parseHeightM(eyeText) : undefined;
+      const targetM = targetText != null ? parseHeightM(targetText) : undefined;
+      if (eyeM === null || targetM === null)
+        return print('Heights like 1.7, 10m or 30ft', 'err');
+      if (at) {
+        print('Tracing sight lines…', 'dim');
+        return viewshedLine(await viewshed.compute({ at, eyeM, targetM }));
+      }
+      print('Click the observer spot inside the boundary. Esc cancels.', 'dim');
+      const state = await viewshed.pickObserver({ eyeM, targetM });
+      return state ? viewshedLine(state) : print('Cancelled', 'dim');
     },
     dossier([n]) {
       const list = buildings?.list().filter((r) => r.kind === 'building') ?? [];

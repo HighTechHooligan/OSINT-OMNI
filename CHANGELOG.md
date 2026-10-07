@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+- **Viewshed** (SITE → Viewshed, Features Code `viewshed`): place an
+  observer inside the site boundary at an eye height (and optional target
+  height) and the area they can see is shaded green, the rest red, with the
+  visible share, area and farthest visible distance. Heights come from the
+  Google 3D mesh when it is on (buildings and trees block the view), else
+  USGS 3DEP bare earth, else globe terrain; earth curvature and refraction
+  are included.
+- **Movable SITE panels**: every SITE section, or the whole tray, has a ⧉
+  button that moves it into a draggable, resizable pop-out panel (and from
+  there into its own window). Closing the panel puts it back in the tray.
+
 - **OSM basemap** loads through `/api/tiles/osm/{z}/{x}/{y}.png`, a server
   proxy that caches tiles (memory and `.gev-cache/osm-tiles/`, 7 days, stale
   on failure) and fails over from tile.openstreetmap.org to CARTO Voyager and

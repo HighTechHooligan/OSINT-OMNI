@@ -1,12 +1,14 @@
 /**
  * SITE: dock popdown with the GUI for every site feature — boundary (draw,
  * import, export, clear), contours (on/off + 2–100 ft slider), canopy,
- * building mode (topography ⇄ clickable buildings/roads/parks), and
- * orbit/record. Features Code exposes the same actions as commands; both
+ * building mode (topography ⇄ clickable buildings/roads/parks), viewshed,
+ * and orbit/record. Each section (or the whole tray) can pop out into a
+ * movable panel and from there into its own window. Features Code exposes the same actions as commands; both
  * call the same services.
  */
 import { openCoordinatePaste } from './coordinatePaste.js';
 import { parseLength, SNAP_STEPS_DEG } from '../services/surveyGeometry.js';
+import { parseHeightM } from '../services/viewshedMath.js';
 import {
   CONTOUR_MAX_FT,
   CONTOUR_MIN_FT,
@@ -30,7 +32,7 @@ export function mountSiteTray({
   onOpenFeaturesCode,
   panels = null,
 } = {}) {
-  const { boundary, orbit, contours, buildings } = site;
+  const { boundary, orbit, contours, buildings, viewshed } = site;
   const host = dock ?? document.getElementById('command-dock');
   const item = document.createElement('div');
   item.id = 'site-tray';
@@ -58,6 +60,7 @@ export function mountSiteTray({
   panel.innerHTML = `
     <header class="site-tray-head">
       <span>SITE</span>
+      <button type="button" class="site-tray-pop" data-st="pop-all" title="Pop the whole SITE panel out into a movable window" aria-label="Pop out SITE tools">⧉</button>
       <button type="button" class="site-tray-close" aria-label="Close site tools">×</button>
     </header>
     <div class="site-tray-body">
@@ -137,6 +140,36 @@ export function mountSiteTray({
         <p class="site-tray-note">Click a building, road or park for its dossier. Dossiers open as pop-outs; open several, drag them, or pop one into its own window.</p>
       </section>
 
+      <section class="site-tray-section" aria-labelledby="st-vs-h">
+        <h3 id="st-vs-h">Viewshed <small>what an observer can see</small></h3>
+        <div class="site-tray-row">
+          <label class="site-tray-select">Eye
+            <input type="text" class="site-tray-input" data-st="vs-eye" value="1.7 m" size="6"
+              aria-label="Observer eye height (m or ft)" title="Observer eye height above the ground: 1.7 m standing, 10 m pole, 30 m mast; ft works too" />
+          </label>
+          <label class="site-tray-select">Target
+            <input type="text" class="site-tray-input" data-st="vs-target" value="0 m" size="6"
+              aria-label="Target height (m or ft)" title="Height above the ground that must be visible: 0 = the ground, 1.7 m = a person" />
+          </label>
+          <label class="site-tray-select">Heights
+            <select data-st="vs-source" aria-label="Height model">
+              <option value="auto" selected>Auto</option>
+              <option value="mesh">3D mesh (buildings, trees)</option>
+              <option value="dem">Bare earth (USGS 3DEP)</option>
+            </select>
+          </label>
+        </div>
+        <div class="site-tray-row">
+          <button type="button" data-st="vs-place" disabled>Place observer</button>
+          <button type="button" data-st="vs-run" disabled>Recompute</button>
+          <button type="button" data-st="vs-clear" disabled>Clear</button>
+        </div>
+        <p class="site-tray-status" data-st="vs-status"></p>
+        <p class="site-tray-legend" aria-hidden="true">
+          <span class="lg-vs-seen">visible</span><span class="lg-vs-hidden">hidden</span>
+        </p>
+      </section>
+
       <section class="site-tray-section" aria-labelledby="st-orbit-h">
         <h3 id="st-orbit-h">Orbit</h3>
         <div class="site-tray-row">
@@ -156,8 +189,14 @@ export function mountSiteTray({
       <p class="site-tray-foot">Same actions in <button type="button" class="site-tray-link" data-st="open-fc">Features Code</button> · type <code>help</code></p>
     </div>`;
   document.body.appendChild(panel);
-  const $ = (key) => panel.querySelector(`[data-st="${key}"]`);
+  // Cache controls up front: a section may live in a pop-out panel (or
+  // another window) later, outside this tray's DOM.
+  const controls = new Map(
+    [...panel.querySelectorAll('[data-st]')].map((el) => [el.dataset.st, el]),
+  );
+  const $ = (key) => controls.get(key);
   const slider = panel.querySelector('#st-interval');
+  const trayBody = panel.querySelector('.site-tray-body');
 
   const filePicker = document.createElement('input');
   filePicker.type = 'file';
@@ -403,6 +442,121 @@ export function mountSiteTray({
     });
   }
 
+  // ---- viewshed ----
+  const fmtArea = (m2) =>
+    m2 >= 40_469
+      ? `${(m2 / 4046.86).toFixed(1)} ac`
+      : `${Math.round(m2).toLocaleString()} m²`;
+  function syncViewshed(state = viewshed?.describe()) {
+    if (!state) return;
+    const has = Boolean(boundary.site);
+    $('vs-place').disabled = !has && !state.picking;
+    $('vs-place').textContent = state.picking ? 'Cancel' : 'Place observer';
+    $('vs-run').disabled = !state.observer || state.loading;
+    $('vs-clear').disabled = !state.on && !state.picking;
+    if (document.activeElement !== $('vs-source'))
+      $('vs-source').value = state.source;
+    if (state.picking)
+      return say(
+        'vs-status',
+        'Click the observer spot inside the boundary. Esc cancels.',
+      );
+    if (state.loading)
+      return say('vs-status', state.progress || 'Computing viewshed…');
+    if (state.error) return say('vs-status', state.error, 'err');
+    const r = state.result;
+    if (!r)
+      return say(
+        'vs-status',
+        has
+          ? 'Set the eye height, then place an observer'
+          : 'Needs a boundary first',
+      );
+    say(
+      'vs-status',
+      `${r.visiblePct}% visible (${fmtArea(r.visibleM2)} seen, ${fmtArea(r.hiddenM2)} hidden) · farthest ${r.farthestVisibleM} m · ${r.sourceLabel} · ${r.cellM} m cells`,
+      'ok',
+    );
+  }
+  const vsOptions = () => {
+    const eyeM = parseHeightM($('vs-eye').value);
+    const targetM = parseHeightM($('vs-target').value);
+    if (eyeM == null || targetM == null)
+      throw new Error('Heights like 1.7, 1.7 m or 6 ft (0–1000 m)');
+    return { eyeM, targetM, source: $('vs-source').value };
+  };
+  if (!viewshed)
+    panel.querySelector('[aria-labelledby="st-vs-h"]').hidden = true;
+  else {
+    $('vs-place').addEventListener(
+      'click',
+      guard('vs-status', async () => {
+        if (viewshed.describe().picking) return viewshed.stopPicking();
+        await viewshed.pickObserver(vsOptions());
+      }),
+    );
+    $('vs-run').addEventListener(
+      'click',
+      guard('vs-status', () => viewshed.compute(vsOptions())),
+    );
+    $('vs-clear').addEventListener('click', () => viewshed.clear());
+    const rerun = guard('vs-status', async () => {
+      const opts = vsOptions();
+      if (viewshed.describe().observer) await viewshed.compute(opts);
+      else viewshed.setOptions(opts);
+    });
+    for (const key of ['vs-eye', 'vs-target'])
+      $(key).addEventListener('change', rerun);
+    $('vs-source').addEventListener('change', rerun);
+  }
+
+  // ---- pop-outs: any section, or the whole tray, into a movable panel ----
+  const sectionTitle = (section) =>
+    section.querySelector('h3')?.firstChild?.textContent?.trim() || 'SITE';
+  function popOut(node, key, title) {
+    if (!panels) return null;
+    if (panels.get?.(key)) return panels.get(key).focus?.();
+    const home = document.createComment(`site-tray:${key}`);
+    node.replaceWith(home);
+    node.classList.add('site-tray-popped');
+    return panels.open({
+      key,
+      title,
+      subtitle: 'SITE tools',
+      kind: 'site',
+      render(body) {
+        body.classList.add('site-tray-popbody');
+        body.appendChild(node);
+      },
+      onClose() {
+        node.classList.remove('site-tray-popped');
+        // The node may sit in another window's document after a pop-out.
+        home.replaceWith(document.adoptNode(node));
+      },
+    });
+  }
+  if (panels) {
+    for (const section of panel.querySelectorAll('.site-tray-section')) {
+      const h3 = section.querySelector('h3');
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'site-tray-pop';
+      btn.title = 'Pop this section out into a movable window';
+      btn.setAttribute('aria-label', `Pop out ${sectionTitle(section)}`);
+      btn.textContent = '⧉';
+      btn.addEventListener('click', () => {
+        const inPanel = section.classList.contains('site-tray-popped');
+        if (inPanel) return panels.get?.(`site-${h3.id}`)?.close?.();
+        popOut(section, `site-${h3.id}`, sectionTitle(section));
+      });
+      h3.appendChild(btn);
+    }
+    $('pop-all').addEventListener('click', () => {
+      popOut(trayBody, 'site-all', 'SITE');
+      setOpen(false);
+    });
+  } else $('pop-all').hidden = true;
+
   // ---- orbit ----
   $('orbit').addEventListener(
     'click',
@@ -452,10 +606,16 @@ export function mountSiteTray({
       syncBoundary();
       syncContours();
       syncBuildings();
+      syncViewshed();
       place();
     }
   };
-  toggle.addEventListener('click', () => setOpen(panel.hidden));
+  toggle.addEventListener('click', () => {
+    // With the whole tray popped out, the dock button brings that panel up.
+    const popped = panels?.get?.('site-all');
+    if (popped) return popped.focus();
+    setOpen(panel.hidden);
+  });
   panel.querySelector('.site-tray-close').addEventListener('click', () => {
     setOpen(false);
     toggle.focus();
@@ -473,9 +633,11 @@ export function mountSiteTray({
   const offBoundary = boundary.onChange(() => {
     syncBoundary();
     syncBuildings();
+    syncViewshed();
   });
   const offContours = contours.onChange((state) => syncContours(state));
   const offBuildings = buildings?.onChange((state) => syncBuildings(state));
+  const offViewshed = viewshed?.onChange((state) => syncViewshed(state));
 
   return {
     open: () => setOpen(true),
@@ -485,6 +647,7 @@ export function mountSiteTray({
       offBoundary();
       offContours();
       offBuildings?.();
+      offViewshed?.();
       window.removeEventListener('resize', onResize);
       item.remove();
       panel.remove();

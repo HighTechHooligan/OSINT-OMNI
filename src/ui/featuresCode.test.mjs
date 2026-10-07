@@ -334,3 +334,44 @@ test('site, clear and cls report state', async () => {
   await h.run('cls');
   assert.equal(h.cleared(), 1);
 });
+
+test('viewshed: at lat,lon with heights, click placement, source and off', async () => {
+  const calls = [];
+  const state = { eyeM: 1.7, targetM: 0, observer: null, result: null };
+  const done = (opts) => {
+    Object.assign(state, opts.eyeM != null ? { eyeM: opts.eyeM } : {});
+    Object.assign(state, opts.targetM != null ? { targetM: opts.targetM } : {});
+    state.observer = opts.at ?? [1, 2];
+    state.result = {
+      visiblePct: 62.5,
+      farthestVisibleM: 410,
+      sourceLabel: 'USGS 3DEP bare earth',
+      cellM: 3.4,
+    };
+    return { ...state };
+  };
+  const viewshed = {
+    describe: () => ({ ...state }),
+    compute: async (opts = {}) => (calls.push(['compute', opts]), done(opts)),
+    pickObserver: async (opts) => (calls.push(['pick', opts]), done(opts)),
+    setOptions: (opts) => calls.push(['setOptions', opts]),
+    clear: () => calls.push(['clear']),
+  };
+  const { site } = fakeSite();
+  const h = harness({ site: { ...site, viewshed } });
+  await h.run('viewshed 44.84,-93.36 10m 6ft');
+  assert.deepEqual(calls[0][1].at, [-93.36, 44.84]);
+  assert.equal(calls[0][1].eyeM, 10);
+  assert.ok(Math.abs(calls[0][1].targetM - 1.8288) < 1e-9);
+  assert.match(h.lines.at(-1).text, /62.5% of the site visible from 10.0 m/);
+  await h.run('viewshed 30ft');
+  assert.equal(calls[1][0], 'pick');
+  assert.ok(Math.abs(calls[1][1].eyeM - 9.144) < 1e-9);
+  await h.run('viewshed mesh');
+  assert.deepEqual(calls[2], ['setOptions', { source: 'mesh' }]);
+  assert.equal(calls[3][0], 'compute');
+  await h.run('viewshed tall');
+  assert.equal(h.lines.at(-1).tone, 'err');
+  await h.run('viewshed off');
+  assert.deepEqual(calls.at(-1), ['clear']);
+});

@@ -2081,6 +2081,8 @@
       "src/services/buildingMath.js",
       "src/services/dossierModel.js",
       "src/services/siteBuildings.js",
+      "src/services/siteViewshed.js",
+      "src/services/viewshedMath.js",
       "src/tools/locationResearch.js",
       "src/ui/dossierPanel.js",
       "src/ui/popoutPanels.js",
