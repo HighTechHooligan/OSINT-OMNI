@@ -5,7 +5,11 @@ import {
   chainSegments,
   clampIntervalFt,
   contourLevels,
+  formatElevationFt,
+  gridRange,
   marchingSquares,
+  normalizeDatum,
+  pickLabelAnchors,
   simplifyLine,
   smoothGrid,
 } from './contourMath.js';
@@ -131,4 +135,116 @@ test('2 ft interval on a 50 m rise yields one level per 2 ft', () => {
     for (let c = 0; c < w; c++) v[r * w + c] = (c * 50) / (w - 1);
   const { levels } = buildContours(v, w, h, 2, { smooth: false });
   assert.equal(levels.length, Math.floor((50 * FEET_PER_METRE) / 2) + 1);
+});
+
+test('normalizeDatum reads what people type', () => {
+  for (const v of ['asl', 'MSL', 'sea', 'navd88', ' abs '])
+    assert.equal(normalizeDatum(v), 'asl');
+  for (const v of ['relative', 'Rel', 'zero', 'local', 'site'])
+    assert.equal(normalizeDatum(v), 'relative');
+  assert.equal(normalizeDatum('banana'), 'asl');
+  assert.equal(normalizeDatum('banana', null), null);
+});
+
+test('gridRange honours the mask', () => {
+  const values = Float32Array.from([1, 5, 9, Number.NaN]);
+  assert.deepEqual(gridRange(values), { min: 1, max: 9 });
+  assert.deepEqual(gridRange(values, Uint8Array.from([0, 1, 1, 1])), {
+    min: 5,
+    max: 9,
+  });
+  assert.equal(gridRange(values, new Uint8Array(4)), null);
+});
+
+test('relative levels start at 0 ft from the base', () => {
+  const baseM = 250.3;
+  const levels = contourLevels(baseM, baseM + 10, 10, baseM);
+  assert.deepEqual(
+    levels.map((l) => l.ft),
+    [0, 10, 20, 30],
+  );
+  assert.ok(Math.abs(levels[1].m - (baseM + 10 / FEET_PER_METRE)) < 1e-9);
+  assert.equal(levels[0].index, true);
+});
+
+test('buildContours relative datum counts from the lowest point inside the mask', () => {
+  const width = 40;
+  const height = 6;
+  const values = plane(width, height).map((v) => v + 300);
+  const mask = new Uint8Array(width * height);
+  for (let r = 0; r < height; r++)
+    for (let c = 10; c < width; c++) mask[r * width + c] = 1;
+  const rel = buildContours(values, width, height, 10, {
+    mask,
+    smooth: false,
+    datum: 'rel',
+  });
+  assert.equal(rel.datum, 'relative');
+  assert.equal(rel.baseM, 310);
+  assert.equal(rel.levels[0].ft, 0);
+  const top = Math.floor((29 * FEET_PER_METRE) / 10) * 10;
+  assert.equal(rel.levels.at(-1).ft, top);
+  assert.ok(rel.lines.every((l) => l.ft >= 0 && l.ft <= top));
+  const asl = buildContours(values, width, height, 10, { mask, smooth: false });
+  assert.equal(asl.datum, 'asl');
+  assert.equal(asl.baseM, 0);
+  assert.ok(asl.levels[0].ft >= 310 * FEET_PER_METRE);
+  // Same metres either way, only the labels change.
+  assert.ok(Math.abs(rel.levels[1].m - (310 + 10 / FEET_PER_METRE)) < 1e-9);
+});
+
+test('labels: text per datum and anchors on the longest index lines', () => {
+  assert.equal(formatElevationFt(905, 'asl'), '905 ft');
+  assert.equal(formatElevationFt(40, 'relative'), '+40 ft');
+  assert.equal(formatElevationFt(0, 'relative'), '0 ft');
+  const lines = [
+    {
+      ft: 0,
+      m: 1,
+      index: true,
+      points: [
+        [0, 0],
+        [1, 1],
+      ],
+    },
+    {
+      ft: 10,
+      m: 2,
+      index: false,
+      points: [
+        [0, 0],
+        [1, 1],
+        [2, 2],
+      ],
+    },
+    {
+      ft: 50,
+      m: 3,
+      index: true,
+      points: [
+        [0, 0],
+        [1, 1],
+        [2, 2],
+        [3, 3],
+      ],
+    },
+  ];
+  const anchors = pickLabelAnchors(lines, 1);
+  assert.deepEqual(anchors, [{ ft: 50, m: 3, point: [2, 2] }]);
+  // Few index lines: minor lines are labelled after them.
+  assert.deepEqual(
+    pickLabelAnchors(lines).map((a) => a.ft),
+    [50, 0, 10],
+  );
+  // Plenty of index lines: only those.
+  const many = Array.from({ length: 5 }, (_, i) => ({
+    ft: i * 50,
+    m: i,
+    index: true,
+    points: [
+      [0, 0],
+      [1, 1],
+    ],
+  }));
+  assert.equal(pickLabelAnchors([...many, lines[1]]).length, 5);
 });
