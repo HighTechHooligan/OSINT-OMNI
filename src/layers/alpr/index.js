@@ -8,6 +8,7 @@ import {
   QUERY_SNAP_DEGREES,
   QUERY_REUSE_MS,
   ALPR_COLOR,
+  OVERVIEW_POINT_PX,
 } from './policy.js';
 import {
   snapAlprBox,
@@ -76,6 +77,16 @@ export function createAlprCamerasLayer({ source, services } = {}) {
     renderRevision: 0,
     /** Cameras in view beyond the render cap. */
     renderSaturated: false,
+    /** Zoomed-out overview: one point per mapped camera in a wide view. */
+    overview: {
+      points: null,
+      key: null,
+      count: 0,
+      abort: null,
+      loading: false,
+      partial: false,
+      error: null,
+    },
   };
   const {
     initOverlay,
@@ -153,6 +164,122 @@ export function createAlprCamerasLayer({ source, services } = {}) {
     }, REQUEST_DEBOUNCE_MS);
   }
 
+  /** Geographic box of a wide view (the whole world when the globe fills it). */
+  function overviewBox(viewer) {
+    const rect = viewer?.camera?.computeViewRectangle?.(
+      viewer.scene.globe.ellipsoid,
+    );
+    if (!rect) return { south: -85, west: -180, north: 85, east: 180 };
+    let west = Cesium.Math.toDegrees(rect.west);
+    let east = Cesium.Math.toDegrees(rect.east);
+    if (!(east > west)) [west, east] = [-180, 180];
+    return {
+      south: Math.max(-85, Cesium.Math.toDegrees(rect.south)),
+      west,
+      north: Math.min(85, Cesium.Math.toDegrees(rect.north)),
+      east,
+    };
+  }
+
+  /** Hide overview points that sit beyond the horizon (they ignore depth). */
+  function cullOverview() {
+    const points = state.overview.points;
+    if (!points?.show || !state.viewer) return;
+    const occluder = new Cesium.EllipsoidalOccluder(
+      state.viewer.scene.globe.ellipsoid,
+      state.viewer.camera.positionWC,
+    );
+    for (let i = 0; i < points.length; i++) {
+      const point = points.get(i);
+      point.show = occluder.isPointVisible(point.position);
+    }
+  }
+
+  function hideOverview() {
+    const overview = state.overview;
+    overview.abort?.abort();
+    overview.abort = null;
+    overview.loading = false;
+    if (overview.points) overview.points.show = false;
+  }
+
+  function destroyOverview(viewer) {
+    hideOverview();
+    if (state.overview.points && viewer)
+      viewer.scene.primitives.remove(state.overview.points);
+    state.overview.points = null;
+    state.overview.key = null;
+    state.overview.count = 0;
+  }
+
+  function drawOverview(snapshot) {
+    const overview = state.overview;
+    if (!overview.points) {
+      overview.points = state.viewer.scene.primitives.add(
+        new Cesium.PointPrimitiveCollection(),
+      );
+    }
+    overview.points.show = true;
+    if (overview.key !== snapshot.key) {
+      overview.points.removeAll();
+      const color = Cesium.Color.fromCssColorString(ALPR_COLOR);
+      const outline = Cesium.Color.BLACK.withAlpha(0.55);
+      const scale = new Cesium.NearFarScalar(2e5, 1.3, 1e7, 0.8);
+      for (const positions of snapshot.positions)
+        for (let i = 0; i < positions.length; i += 2)
+          overview.points.add({
+            position: Cesium.Cartesian3.fromDegrees(
+              positions[i],
+              positions[i + 1],
+            ),
+            pixelSize: OVERVIEW_POINT_PX,
+            color,
+            outlineColor: outline,
+            outlineWidth: 1,
+            scaleByDistance: scale,
+            // Ellipsoid-height dots would sink under terrain; the horizon
+            // cull above keeps far-side dots hidden instead.
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          });
+      overview.key = snapshot.key;
+    }
+    overview.count = snapshot.count;
+    overview.partial = snapshot.partial;
+    cullOverview();
+    governorRequestRender('alpr-overview');
+  }
+
+  /** Wider than a city: draw every mapped camera in view as a dot. */
+  async function loadOverview() {
+    if (typeof source.fetchOverview !== 'function') return;
+    const overview = state.overview;
+    overview.abort?.abort();
+    const abort = new AbortController();
+    overview.abort = abort;
+    overview.loading = true;
+    governorRequestRender('alpr-status');
+    try {
+      const snapshot = await source.fetchOverview(
+        overviewBox(state.viewer),
+        abort.signal,
+      );
+      if (abort.signal.aborted || overview.abort !== abort || !state.enabled)
+        return;
+      overview.error = null;
+      drawOverview(snapshot);
+    } catch (error) {
+      if (abort.signal.aborted || overview.abort !== abort) return;
+      overview.error =
+        error?.message || 'Camera overview temporarily unavailable';
+    } finally {
+      if (overview.abort === abort) {
+        overview.abort = null;
+        overview.loading = false;
+        governorRequestRender('alpr-status');
+      }
+    }
+  }
+
   async function loadCameras() {
     if (!state.enabled || !state.viewer) return;
     clearTimeout(state.debounceTimer);
@@ -168,6 +295,7 @@ export function createAlprCamerasLayer({ source, services } = {}) {
       clearUnavailableRetry();
       renderRecords();
       setAlprStatus('zoom-in');
+      loadOverview();
       return;
     }
     // A settled view still inside the last snapped query box, with fresh
@@ -185,6 +313,7 @@ export function createAlprCamerasLayer({ source, services } = {}) {
         state.pendingQueryBox = null;
         state.loading = false;
       }
+      hideOverview();
       renderRecords();
       state.retrying = false;
       setAlprStatus(
@@ -225,6 +354,7 @@ export function createAlprCamerasLayer({ source, services } = {}) {
         clearUnavailableRetry();
         renderRecords();
         setAlprStatus('zoom-in');
+        loadOverview();
         return;
       }
       const { records, stale, saturated } = validateAlprSnapshot(snapshot);
@@ -254,6 +384,7 @@ export function createAlprCamerasLayer({ source, services } = {}) {
         ? snapshot.zoom
         : null;
       clearUnavailableRetry();
+      hideOverview();
       // Stale and saturated are independent facts; a cached response that also
       // hit the cap must still warn about coverage, not just about freshness.
       renderRecords();
@@ -332,6 +463,7 @@ export function createAlprCamerasLayer({ source, services } = {}) {
       state.loading = false;
       state.retrying = false;
       if (state.dataSource) state.dataSource.show = false;
+      hideOverview();
       clearSelection();
       clearRendered();
       setAlprStatus('idle');
@@ -349,6 +481,7 @@ export function createAlprCamerasLayer({ source, services } = {}) {
       state.postRenderRemove = null;
       state.clickHandler?.destroy();
       state.clickHandler = null;
+      destroyOverview(viewer);
       clearRendered();
       if (state.dataSource && viewer)
         viewer.dataSources.remove(state.dataSource, true);
@@ -393,6 +526,39 @@ export function createAlprCamerasLayer({ source, services } = {}) {
       };
     },
     getStats() {
+      const overview = state.overview;
+      const overviewShown =
+        state.enabled &&
+        state.status === 'zoom-in' &&
+        Boolean(overview.points?.show);
+      if (overviewShown || (state.enabled && state.status === 'zoom-in'))
+        return {
+          count: overviewShown ? overview.count : 0,
+          countLabel: overviewShown
+            ? `${overview.count.toLocaleString()} mapped in view`
+            : '',
+          noCoverage: false,
+          lastUpdate: state.lastUpdate,
+          stale: false,
+          saturated: overviewShown && overview.partial,
+          renderRevision: state.renderRevision,
+          onScreen: null,
+          shown: 0,
+          error: null,
+          overviewError: overview.error,
+          status: 'zoom-in',
+          loading: overview.loading,
+          retryAt: 0,
+          retrying: false,
+          retryInSec: 0,
+          loadingLabel: overview.loading
+            ? 'loading mapped ALPR camera overview'
+            : overviewShown
+              ? 'Overview · zoom in to a city for camera details'
+              : overview.error
+                ? 'Zoom in to load mapped cameras (overview unavailable)'
+                : 'Zoom in to load mapped cameras',
+        };
       return {
         count: state.dataSource?.entities.values.length || 0,
         countLabel:

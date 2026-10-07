@@ -136,6 +136,14 @@ from a community-hosted hourly US/Canada extract, using detail vector tiles.
 It shows mapped locations and available tags, not plate records, camera video,
 current operating status or exhaustive coverage. OSM edit timestamps are not
 presented as field-verification dates. Other regions show no ALPR data.
+The extract is the one DeFlock's public map draws (`tiles.dontgetflocked.com`,
+rebuilt hourly from OSM). The browser reads it through the app server's
+`/api/alpr` proxy, which caches tiles on disk (`.gev-cache/alpr/`) for an hour
+and serves the last good copy when the host is down; a build without the
+server reads the host directly. `ALPR_TILES_UPSTREAM` points the proxy at
+another host with the same `cameras-{us,ca}-hourly` layout. Views wider than a
+city draw every mapped camera as a plain dot from the extract's geometry-only
+z3-z8 tiles; camera details load once you zoom in to a city.
 
 Reads are viewport-bounded, with at most 16 tiles per country, four concurrent
 reads per country, 1,500 displayed records and an hour-long decoded-tile cache.

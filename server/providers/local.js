@@ -4,6 +4,7 @@ import { tomtomProxy } from './traffic.js';
 import { firmsProxy } from './firms.js';
 import { terrainHeightsProxy } from './terrain.js';
 import { elevation3depProxy } from './elevation3dep.js';
+import { alprTilesProxy } from './alprTiles.js';
 import { adsbdbProxy } from './aircraft/enrichment.js';
 import { overpassProxy } from './overpass.js';
 import { militaryInstallationsProxy } from './military-installations.js';
@@ -40,6 +41,7 @@ function localProviderPlugins({ realtime } = {}) {
     rocketLaunchesProxy(),
     terrainHeightsProxy(),
     elevation3depProxy(),
+    alprTilesProxy(),
     adsbdbProxy(),
     overpassProxy(),
     militaryInstallationsProxy(),

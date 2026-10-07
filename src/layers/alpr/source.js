@@ -9,13 +9,17 @@ import {
   DETAIL_MAX_TILES,
   SOURCE_RECORD_LIMIT,
   PRECISION_CACHE_LIMIT,
+  OVERVIEW_MIN_ZOOM,
+  OVERVIEW_MAX_ZOOM,
+  OVERVIEW_MAX_TILES,
+  OVERVIEW_POINT_LIMIT,
 } from './policy.js';
 import {
   createVectorTileSource,
   validTileBounds,
 } from '../../sources/vectorTiles.js';
 import { buildOverpassQuery, normalizeAlprNode } from './records.js';
-import { decodeAlprTile } from './tileRecords.js';
+import { decodeAlprTile, decodeAlprOverviewTile } from './tileRecords.js';
 
 /**
  * Finest attributed extract zoom whose tiles for `box` fit the per-view cap,
@@ -65,18 +69,109 @@ export function createAlprPrecisionCache(limit = PRECISION_CACHE_LIMIT) {
   };
 }
 
+/**
+ * Finest overview zoom whose tiles for `box` fit OVERVIEW_MAX_TILES.
+ * @param {{south:number, west:number, north:number, east:number}} box View box.
+ * @returns {number} Tile zoom (OVERVIEW_MIN_ZOOM at worst).
+ */
+export function alprOverviewZoom(box) {
+  for (let zoom = OVERVIEW_MAX_ZOOM; zoom > OVERVIEW_MIN_ZOOM; zoom--)
+    if (
+      tilesForBounds(box, zoom, { maxTiles: OVERVIEW_MAX_TILES + 1 }).length <=
+      OVERVIEW_MAX_TILES
+    )
+      return zoom;
+  return OVERVIEW_MIN_ZOOM;
+}
+
+export const ALPR_EXTRACT_ORIGIN = 'https://tiles.dontgetflocked.com';
+
+/** Same-origin `/api/alpr` proxy when the page is served over http(s). */
+function defaultProxyOrigin() {
+  const origin = globalThis.location?.origin;
+  return typeof origin === 'string' && /^https?:\/\//.test(origin)
+    ? origin
+    : null;
+}
+
+/**
+ * One country's extract, read through the app server's caching proxy
+ * (`server/providers/alprTiles.js`) and directly from the community host when
+ * the proxy is missing (a static or panel build) or cannot reach it.
+ */
+function createCountryExtract(country, options) {
+  const { proxyOrigin, decode, fetchImpl, maxTiles } = options;
+  const make = (tileJsonUrl, allowedOrigin) =>
+    createVectorTileSource({
+      tileJsonUrl,
+      allowedOrigin,
+      decode,
+      fetchImpl,
+      maxTiles,
+      ttlMs: 60 * 60 * 1000,
+    });
+  const direct = make(
+    `${ALPR_EXTRACT_ORIGIN}/cameras-${country}-hourly.json`,
+    ALPR_EXTRACT_ORIGIN,
+  );
+  const proxy = proxyOrigin
+    ? make(`${proxyOrigin}/api/alpr/${country}.json`, proxyOrigin)
+    : null;
+  let active = proxy || direct;
+  async function run(read, signal) {
+    try {
+      return await read(active);
+    } catch (error) {
+      if (active !== proxy || signal?.aborted || error?.name === 'AbortError')
+        throw error;
+      const cause = error?.cause ?? error;
+      const status = error?.status ?? cause?.status;
+      // No proxy route on this host (404/405, or an HTML fallback page):
+      // read the extract directly from now on.
+      if (status === 404 || status === 405 || cause instanceof SyntaxError) {
+        active = direct;
+        return read(direct);
+      }
+      // The proxy is there but its upstream failed: the browser may still
+      // reach the host directly, so try once without switching.
+      try {
+        return await read(direct);
+      } catch {
+        throw error;
+      }
+    }
+  }
+  return {
+    getMetadata: (signal) => run((s) => s.getMetadata(signal), signal),
+    fetchBounds: (box, opts) =>
+      run((s) => s.fetchBounds(box, opts), opts?.signal),
+    clear() {
+      proxy?.clear();
+      direct.clear();
+    },
+  };
+}
+
 /** Construct the viewport-bounded OpenStreetMap hourly extract adapter. */
 export function createAlprTileSource({
   tileFetchImpl = (...args) => globalThis.fetch(...args),
+  proxyOrigin = defaultProxyOrigin(),
 } = {}) {
-  const sources = ['us', 'ca'].map((country) =>
-    createVectorTileSource({
-      tileJsonUrl: `https://tiles.dontgetflocked.com/cameras-${country}-hourly.json`,
-      allowedOrigin: 'https://tiles.dontgetflocked.com',
+  const countries = ['us', 'ca'];
+  const sources = countries.map((country) =>
+    createCountryExtract(country, {
+      proxyOrigin,
       decode: decodeAlprTile,
       fetchImpl: tileFetchImpl,
       maxTiles: DETAIL_MAX_TILES,
-      ttlMs: 60 * 60 * 1000,
+    }),
+  );
+  const overviewSources = countries.map((country) =>
+    createCountryExtract(country, {
+      proxyOrigin,
+      decode: decodeAlprOverviewTile,
+      fetchImpl: tileFetchImpl,
+      maxTiles: OVERVIEW_MAX_TILES,
     }),
   );
   const precision = createAlprPrecisionCache();
@@ -180,8 +275,63 @@ export function createAlprTileSource({
       };
     },
     detailZoom: alprDetailZoom,
+    /**
+     * Every mapped camera position in a wide view, from geometry-only tiles.
+     * @param {{south:number, west:number, north:number, east:number}} box View box.
+     * @param {AbortSignal} [signal] Cancellation.
+     * @returns {Promise<{positions: Float64Array[], count: number, key: string,
+     *   partial: boolean, noCoverage: boolean}>} lon/lat pairs per tile;
+     *   `key` names the tile set so an unchanged view need not redraw.
+     */
+    async fetchOverview(box, signal) {
+      if (!validTileBounds(box))
+        throw new TypeError('ALPR overview requires a geographic box');
+      signal?.throwIfAborted();
+      const positions = [];
+      const keys = [];
+      let count = 0,
+        points = 0,
+        partial = false,
+        covered = false;
+      for (const source of overviewSources) {
+        const metadata = await source.getMetadata(signal);
+        const [west, south, east, north] = metadata.bounds || [];
+        if (![west, south, east, north].every(Number.isFinite))
+          throw new Error('Camera coverage unavailable');
+        const clip = {
+          south: Math.max(box.south, south),
+          west: Math.max(box.west, west),
+          north: Math.min(box.north, north),
+          east: Math.min(box.east, east),
+        };
+        if (clip.north <= clip.south || clip.east <= clip.west) continue;
+        covered = true;
+        const zoom = alprOverviewZoom(clip);
+        const result = await source.fetchBounds(clip, { zoom, signal });
+        partial ||= result.partial;
+        for (const [i, tile] of result.tiles.entries()) {
+          const t = result.loadedTiles[i];
+          keys.push(`${t.z}/${t.x}/${t.y}`);
+          if (points + tile.positions.length / 2 > OVERVIEW_POINT_LIMIT) {
+            partial = true;
+            continue;
+          }
+          positions.push(tile.positions);
+          points += tile.positions.length / 2;
+          count += tile.count;
+        }
+      }
+      signal?.throwIfAborted();
+      return {
+        positions,
+        count,
+        key: keys.sort().join(','),
+        partial,
+        noCoverage: !covered,
+      };
+    },
     destroy() {
-      for (const source of sources) source.clear();
+      for (const source of [...sources, ...overviewSources]) source.clear();
       precision.clear();
     },
     label: 'OpenStreetMap · community mapped',

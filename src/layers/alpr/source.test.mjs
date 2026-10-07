@@ -3,12 +3,14 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
   alprDetailZoom,
+  alprOverviewZoom,
   createAlprPrecisionCache,
   createAlprTileSource,
   createOverpassAlprSource,
   buildOverpassQuery,
 } from './source.js';
 import { validateAlprSnapshot, alprCreditMarkup } from './model.js';
+import { decodeAlprOverviewTile } from './tileRecords.js';
 const box = { south: 30, west: -98, north: 30.1, east: -97.9 };
 test('the source rejects invalid and unbounded queries before fetching', async () => {
   let calls = 0;
@@ -287,4 +289,106 @@ test('the tile adapter never passes public URLs through an injected API transpor
   assert.ok(result.records.length);
   assert.ok(urls.length > 1);
   assert.ok(urls.every((url) => url.startsWith('https://tiles.')));
+});
+
+test('the browser reads the extract through the same-origin proxy', async () => {
+  const calls = [];
+  const source = createAlprTileSource({
+    proxyOrigin: 'http://localhost:5173',
+    tileFetchImpl: async (url) => {
+      calls.push(url);
+      if (url.endsWith('.json')) {
+        const country = url.includes('/ca.json') ? 'ca' : 'us';
+        return Response.json({
+          ...metadata(country),
+          tiles: [`/api/alpr/${country}/{z}/{x}/{y}.mvt`],
+        });
+      }
+      return new Response(fixture);
+    },
+  });
+  const snapshot = await source.fetch(austin);
+  assert.ok(snapshot.records.length > 0);
+  assert.ok(calls.length > 1);
+  assert.ok(
+    calls.every(
+      (url) =>
+        url.startsWith('http://localhost:5173/api/alpr/') ||
+        url.startsWith('/api/alpr/'),
+    ),
+    calls.join('\n'),
+  );
+});
+
+test('a host without the proxy falls back to the community extract', async () => {
+  const calls = [];
+  const source = createAlprTileSource({
+    proxyOrigin: 'http://localhost:5173',
+    tileFetchImpl: async (url) => {
+      calls.push(url);
+      if (url.startsWith('http://localhost'))
+        return new Response('<!doctype html>', { status: 404 });
+      return url.endsWith('.json')
+        ? Response.json(metadata(url.includes('-ca-') ? 'ca' : 'us'))
+        : new Response(fixture);
+    },
+  });
+  const snapshot = await source.fetch(austin);
+  assert.ok(snapshot.records.length > 0);
+  assert.ok(
+    calls.some((url) => url.startsWith('https://tiles.dontgetflocked.com/')),
+  );
+  const before = calls.filter((url) =>
+    url.startsWith('http://localhost'),
+  ).length;
+  await source.fetch({ south: 32.7, north: 32.85, west: -96.9, east: -96.7 });
+  assert.equal(
+    calls.filter((url) => url.startsWith('http://localhost')).length,
+    before,
+    'the missing proxy is not asked again',
+  );
+});
+
+test('wide views get an overview of every mapped camera position', async () => {
+  const tiles = [];
+  const source = createAlprTileSource({
+    tileFetchImpl: async (url) => {
+      if (url.endsWith('.json'))
+        return Response.json(metadata(url.includes('-ca-') ? 'ca' : 'us'));
+      tiles.push(url);
+      // The fixture is z11/467/843; reuse it only for that address.
+      return url.endsWith('/11/467/843.mvt')
+        ? new Response(fixture)
+        : new Response(new Uint8Array(0));
+    },
+  });
+  const texas = { south: 25.8, west: -106.7, north: 36.5, east: -93.5 };
+  const zoom = alprOverviewZoom(texas);
+  assert.ok(zoom >= 3 && zoom <= 8);
+  const overview = await source.fetchOverview(texas);
+  assert.equal(overview.noCoverage, false);
+  assert.ok(tiles.length > 0 && tiles.length <= 48);
+  assert.ok(tiles.every((url) => url.includes(`/${zoom}/`)));
+  assert.equal(typeof overview.key, 'string');
+  const europe = await source.fetchOverview({
+    south: 40,
+    west: 0,
+    north: 50,
+    east: 10,
+  });
+  assert.equal(europe.noCoverage, true);
+  assert.equal(europe.count, 0);
+});
+
+test('overview decoding yields lon/lat pairs in the tile', () => {
+  const { positions, count } = decodeAlprOverviewTile(fixture, 11, 467, 843);
+  assert.ok(count >= 1);
+  assert.equal(positions.length, count * 2);
+  const [lon, lat] = positions;
+  assert.ok(lon > -98 && lon < -97.6, String(lon));
+  assert.ok(lat > 30 && lat < 30.5, String(lat));
+  assert.deepEqual(decodeAlprOverviewTile(new Uint8Array(0), 3, 1, 3), {
+    positions: new Float64Array(0),
+    count: 0,
+  });
 });
