@@ -17,6 +17,7 @@ Boundary
 Contours (USGS 3DEP bare earth, inside the boundary)
   contours on | off        draw or hide contours
   contour <ft>             set the interval, 2-100 ft (also: set contour <ft>)
+  contour align on | off   snap contours to the Google 3D mesh (measured per site)
   canopy on | off          shade tree/structure cover from the Google 3D mesh
 Camera
   zoom                     fly to the boundary
@@ -199,7 +200,17 @@ export function createFeatureCommands({
     contours([value]) {
       return contourSwitch(switchArg(value) ?? !contours.describe().contoursOn);
     },
-    contour([value]) {
+    async contour([value, arg]) {
+      if (/^align$/i.test(value ?? '')) {
+        const on = switchArg(arg) ?? !contours.describe().autoAlign;
+        await contours.setAutoAlign(on);
+        return print(
+          on
+            ? 'Contour mesh alignment on (needs the Google 3D map source)'
+            : 'Contour mesh alignment off',
+          'ok',
+        );
+      }
       const on = switchArg(value);
       if (on !== null) return contourSwitch(on);
       return setContour(value);

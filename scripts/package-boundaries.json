@@ -2071,6 +2071,8 @@
       "src/services/siteBoundary.js",
       "src/services/siteContours.js",
       "src/services/contourMath.js",
+      "src/services/datum.js",
+      "src/services/meshAlign.js",
       "src/ui/siteTray.js",
       "src/app/layers/osmStreets.js",
       "src/layers/osmStreets/index.js",
