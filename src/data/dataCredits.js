@@ -368,6 +368,15 @@ export const TOMTOM_CREDIT = {
     '<a href="https://www.tomtom.com" target="_blank" rel="noopener">TomTom</a>',
 };
 
+/** Registered when the FAA Airspace layer first turns on (U.S. public
+ * domain — credited as a courtesy). */
+export const FAA_AIRSPACE_CREDIT = {
+  key: 'faa-airspace',
+  html:
+    'Airspace, TFRs and UAS Facility Maps from the ' +
+    '<a href="https://adds-faa.opendata.arcgis.com" target="_blank" rel="noopener">FAA</a> (public domain; advisory, not for navigation)',
+};
+
 /** Registered when the first Natural Earth region or state/province outline
  * resolves (public domain — no attribution required; credited as a courtesy). */
 export const NATURAL_EARTH_CREDIT = {

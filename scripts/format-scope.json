@@ -920,5 +920,13 @@
   "src/tools/views.test.mjs",
   "src/app/embed.test.mjs",
   "src/tools/globePanel.test.mjs",
-  "src/costEndpointThrottle.test.mjs"
+  "src/costEndpointThrottle.test.mjs",
+  "server/providers/airspace.js",
+  "src/app/layers/airspace.js",
+  "src/data/airspaceProxy.test.mjs",
+  "src/layers/airspace/index.js",
+  "src/layers/airspace/layer.test.mjs",
+  "src/layers/airspace/records.js",
+  "src/layers/airspace/records.test.mjs",
+  "src/layers/airspace/source.js"
 ]
