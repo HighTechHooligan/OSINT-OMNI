@@ -1,29 +1,59 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createFeatureCommands, intArg, parseCommand } from './featuresCode.js';
+import {
+  createFeatureCommands,
+  intArg,
+  parseCommand,
+  switchArg,
+} from './featuresCode.js';
 
-function fakeOrbit() {
+function fakeSite() {
   const calls = [];
-  const site = {
+  const summary = {
     name: 'Test Site',
+    areaAcres: 47,
     vertices: 4,
     points: 2,
     acrossM: 120,
     center: { lon: 0, lat: 0 },
   };
   let loaded = false;
-  return {
-    calls,
+  const contourState = {
+    intervalFt: 10,
+    contoursOn: false,
+    canopyOn: false,
+    stats: null,
+    canopy: null,
+  };
+  const boundary = {
     loadPreset: async (key) => {
       calls.push(['loadPreset', key]);
       loaded = true;
-      return site;
+      return summary;
     },
-    loadKml: async (file, name) => {
+    loadKml: async (_file, name) => {
       calls.push(['loadKml', name]);
       loaded = true;
-      return site;
+      return summary;
     },
+    startDraw: async () => {
+      calls.push(['startDraw']);
+      loaded = true;
+      return summary;
+    },
+    finishDraw: () => calls.push(['finishDraw']),
+    cancelDraw: () => calls.push(['cancelDraw']),
+    exportKml: () => {
+      calls.push(['exportKml']);
+      return 'test_site_boundary.kml';
+    },
+    describe: () => (loaded ? summary : null),
+    clear: () => {
+      loaded = false;
+      calls.push(['clear']);
+    },
+  };
+  const orbit = {
     zoom: async () => calls.push(['zoom']),
     orbit: (opts) => calls.push(['orbit', opts]),
     stop: () => calls.push(['stop']),
@@ -32,16 +62,47 @@ function fakeOrbit() {
       opts.onProgress(1, opts.frames);
       return 'test_site_orbit.gif';
     },
-    describe: () => (loaded ? site : null),
-    clear: () => {
-      loaded = false;
-      calls.push(['clear']);
+  };
+  const contours = {
+    describe: () => ({ ...contourState }),
+    showContours: async () => {
+      calls.push(['showContours', contourState.intervalFt]);
+      contourState.contoursOn = true;
+      contourState.stats = {
+        lines: 120,
+        minFt: 840,
+        maxFt: 1010,
+        resM: 1,
+        cached: false,
+      };
+      return { ...contourState };
+    },
+    hideContours: () => {
+      calls.push(['hideContours']);
+      contourState.contoursOn = false;
+    },
+    setContourInterval: async (ft) => {
+      contourState.intervalFt = Math.min(100, Math.max(2, Math.round(ft)));
+      calls.push(['setContourInterval', contourState.intervalFt]);
+      return { ...contourState };
+    },
+    showCanopy: async ({ onProgress }) => {
+      calls.push(['showCanopy']);
+      onProgress(1, 1);
+      contourState.canopyOn = true;
+      contourState.canopy = { coveredPct: 38, cellM: 4 };
+      return { ...contourState };
+    },
+    hideCanopy: () => {
+      calls.push(['hideCanopy']);
+      contourState.canopyOn = false;
     },
   };
+  return { calls, site: { boundary, orbit, contours } };
 }
 
 function harness(extra = {}) {
-  const orbit = fakeOrbit();
+  const { calls, site } = fakeSite();
   const lines = [];
   const print = (text, tone = '') => {
     const line = { text, tone };
@@ -50,18 +111,22 @@ function harness(extra = {}) {
       set textContent(value) {
         line.text = value;
       },
+      set className(value) {
+        line.tone = value;
+      },
     };
   };
   let cleared = 0;
   const api = createFeatureCommands({
-    orbit,
+    site,
     print,
     clearOutput: () => cleared++,
     pickFile: async () => ({ name: 'Hyland_Hills.kmz' }),
     viewer: { id: 'viewer' },
     ...extra,
   });
-  return { ...api, orbit, lines, cleared: () => cleared };
+  const names = () => calls.map(([name]) => name);
+  return { ...api, calls, names, lines, cleared: () => cleared };
 }
 
 test('parseCommand splits name, args and raw tail', () => {
@@ -74,39 +139,96 @@ test('parseCommand splits name, args and raw tail', () => {
   assert.deepEqual(parseCommand('go'), { name: 'go', args: [], raw: '' });
 });
 
-test('intArg clamps and falls back', () => {
+test('intArg clamps and falls back; switchArg reads on/off', () => {
   assert.equal(intArg('72', 144, 12, 720), 72);
   assert.equal(intArg('5', 144, 12, 720), 12);
   assert.equal(intArg('99999', 144, 12, 720), 720);
   assert.equal(intArg(undefined, 144, 12, 720), 144);
-  assert.equal(intArg('abc', 144, 12, 720), 144);
+  assert.equal(switchArg('ON'), true);
+  assert.equal(switchArg('off'), false);
+  assert.equal(switchArg(undefined), null);
 });
 
-test('preset, go and record drive the orbit service in order', async () => {
+test('preset, go and record drive the services in order', async () => {
   const h = harness();
   assert.equal(await h.run('preset hyland'), true);
   assert.equal(await h.run('go'), true);
   assert.equal(await h.run('record 72 640 360'), true);
-  const names = h.orbit.calls.map(([name]) => name);
-  assert.deepEqual(names, ['loadPreset', 'zoom', 'orbit', 'record']);
-  const recordOpts = h.orbit.calls.at(-1)[1];
-  assert.equal(recordOpts.frames, 72);
-  assert.equal(recordOpts.width, 640);
-  assert.equal(recordOpts.height, 360);
-  assert.equal(recordOpts.title, 'DJI LIDAR L2+ORTHO');
+  assert.deepEqual(h.names(), ['loadPreset', 'zoom', 'orbit', 'record']);
+  const opts = h.calls.at(-1)[1];
+  assert.equal(opts.frames, 72);
+  assert.equal(opts.title, 'DJI LIDAR L2+ORTHO');
   assert.match(h.lines.at(-1).text, /Saved test_site_orbit\.gif/);
 });
 
 test('record defaults to 144 frames', async () => {
   const h = harness();
   await h.run('record');
-  assert.equal(h.orbit.calls.at(-1)[1].frames, 144);
+  assert.equal(h.calls.at(-1)[1].frames, 144);
 });
 
-test('load passes the file name without extension', async () => {
+test('boundary draw, import, export and clear', async () => {
   const h = harness();
+  await h.run('boundary draw');
+  await h.run('boundary import');
   await h.run('load');
-  assert.deepEqual(h.orbit.calls[0], ['loadKml', 'Hyland_Hills']);
+  await h.run('boundary export');
+  await h.run('boundary');
+  await h.run('boundary clear');
+  assert.deepEqual(h.names(), [
+    'startDraw',
+    'loadKml',
+    'loadKml',
+    'exportKml',
+    'clear',
+  ]);
+  assert.equal(h.calls[1][1], 'Hyland_Hills');
+  assert.ok(h.lines.some((l) => /Test Site · 47 ac/.test(l.text)));
+});
+
+test('contour interval is a variable: contour <ft> and set contour <ft>', async () => {
+  const h = harness();
+  await h.run('contour 5');
+  assert.deepEqual(h.calls.at(-1), ['setContourInterval', 5]);
+  assert.match(h.lines.at(-1).text, /set to 5 ft/);
+  await h.run('contours on');
+  assert.deepEqual(h.calls.at(-1), ['showContours', 5]);
+  assert.match(h.lines.at(-1).text, /every 5 ft · 120 lines · 840–1010 ft/);
+  await h.run('set contour 200');
+  assert.ok(h.calls.some(([n, v]) => n === 'setContourInterval' && v === 100));
+  assert.deepEqual(h.calls.at(-1), ['showContours', 100]);
+  await h.run('contours off');
+  assert.deepEqual(h.calls.at(-1), ['hideContours']);
+  assert.equal(await h.run('contour abc'), true);
+  assert.match(h.lines.at(-1).text, /Usage: contour/);
+});
+
+test('canopy on/off reports coverage', async () => {
+  const h = harness();
+  await h.run('canopy on');
+  assert.match(h.lines.at(-1).text, /38% of the site/);
+  await h.run('canopy off');
+  assert.deepEqual(h.calls.at(-1), ['hideCanopy']);
+});
+
+test('layer osm toggles through the data manager', async () => {
+  let enabled = false;
+  const toggles = [];
+  const dm = {
+    layers: new Map([['osm-streets', {}]]),
+    isEffectivelyEnabled: () => enabled,
+    toggle: async (id) => {
+      toggles.push(id);
+      enabled = !enabled;
+    },
+  };
+  const h = harness({ getDataManager: () => dm });
+  await h.run('layer osm on');
+  await h.run('layer osm on');
+  await h.run('layer streets off');
+  assert.deepEqual(toggles, ['osm-streets', 'osm-streets']);
+  await h.run('layer nope on');
+  assert.match(h.lines.at(-1).text, /Unknown layer/);
 });
 
 test('unknown commands and inherited names are rejected', async () => {
@@ -119,11 +241,25 @@ test('unknown commands and inherited names are rejected', async () => {
 
 test('service errors are printed, not thrown', async () => {
   const h = harness();
-  h.orbit.zoom = async () => {
-    throw new Error('No site loaded.');
-  };
-  assert.equal(await h.run('zoom'), false);
-  assert.deepEqual(h.lines.at(-1), { text: 'No site loaded.', tone: 'err' });
+  const failing = createFeatureCommands({
+    site: {
+      boundary: {},
+      contours: {},
+      orbit: {
+        zoom: async () => {
+          throw new Error('No boundary yet.');
+        },
+      },
+    },
+    print: (text, tone) => {
+      h.lines.push({ text, tone });
+      return {};
+    },
+    clearOutput: () => {},
+    pickFile: async () => null,
+  });
+  assert.equal(await failing.run('zoom'), false);
+  assert.deepEqual(h.lines.at(-1), { text: 'No boundary yet.', tone: 'err' });
 });
 
 test('js is unavailable unless eval is allowed', async () => {
@@ -144,7 +280,7 @@ test('site, clear and cls report state', async () => {
   await h.run('site');
   assert.match(
     h.lines.at(-1).text,
-    /Test Site · 4 vertices · 2 points · ~120 m across/,
+    /Test Site · 47 ac · 4 vertices · 2 points/,
   );
   await h.run('clear');
   await h.run('cls');

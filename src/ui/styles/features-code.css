@@ -29,11 +29,11 @@
 }
 
 #command-dock > #features-code.open {
-  border-color: rgba(0, 212, 255, 0.55);
+  border-color: rgba(var(--accent-rgb), 0.55);
   box-shadow:
     0 8px 32px rgba(0, 0, 0, 0.5),
-    0 0 0 1px rgba(0, 212, 255, 0.08) inset,
-    0 0 1rem rgba(0, 212, 255, 0.12);
+    0 0 0 1px rgba(var(--accent-rgb), 0.08) inset,
+    0 0 1rem rgba(var(--accent-rgb), 0.12);
 }
 
 .features-code-floating {
@@ -107,7 +107,7 @@
   border-radius: 12px;
   box-shadow:
     0 12px 36px rgba(0, 0, 0, 0.58),
-    0 0 28px rgba(0, 212, 255, 0.06);
+    0 0 28px rgba(var(--accent-rgb), 0.06);
   backdrop-filter: blur(28px) saturate(1.35);
   -webkit-backdrop-filter: blur(28px) saturate(1.35);
   font-family: var(--font-mono);

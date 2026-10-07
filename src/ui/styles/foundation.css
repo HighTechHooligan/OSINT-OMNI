@@ -8,9 +8,28 @@
   --glass-bg: rgba(12, 12, 20, 0.72);
   --glass-border: rgba(255, 255, 255, 0.08);
   --glass-border-hover: rgba(255, 255, 255, 0.15);
-  --accent: #00d4ff;
-  --accent-dim: rgba(0, 212, 255, 0.15);
-  --accent-glow: rgba(0, 212, 255, 0.4);
+  /* OSINT OMNI accent: crimson fading to violet, corner to corner.
+     --accent is the solid midpoint for text, borders and glows;
+     --accent-rgb feeds every rgba(var(--accent-rgb), a) tint;
+     --accent-fade is the gradient for on/selected surfaces. */
+  --accent-start: #e8365d;
+  --accent-end: #7c3aff;
+  --accent: #b347f0;
+  --accent-rgb: 179, 71, 240;
+  --accent-start-rgb: 232, 54, 93;
+  --accent-end-rgb: 124, 58, 255;
+  --accent-fade: linear-gradient(
+    135deg,
+    rgba(var(--accent-start-rgb), 0.28),
+    rgba(var(--accent-end-rgb), 0.28)
+  );
+  --accent-fade-strong: linear-gradient(
+    135deg,
+    var(--accent-start),
+    var(--accent-end)
+  );
+  --accent-dim: rgba(var(--accent-rgb), 0.15);
+  --accent-glow: rgba(var(--accent-rgb), 0.4);
   --text-primary: #e8eaed;
   --text-secondary: rgba(232, 234, 237, 0.5);
   --text-dim: rgba(232, 234, 237, 0.3);
@@ -396,7 +415,7 @@ body.cockpit-mode #cockpit-cloud-effects.active {
     0 8px 32px rgba(0, 0, 0, 0.5),
     0 0 0 1px rgba(255, 255, 255, 0.03) inset,
     0 1px 0 rgba(255, 255, 255, 0.06) inset,
-    0 0 20px rgba(0, 212, 255, 0.08);
+    0 0 20px rgba(var(--accent-rgb), 0.08);
   backdrop-filter: blur(24px) saturate(1.4);
   -webkit-backdrop-filter: blur(24px) saturate(1.4);
   font-family: var(--font-mono);
@@ -408,8 +427,8 @@ body.cockpit-mode #cockpit-cloud-effects.active {
   height: 34px;
   flex: 0 0 auto;
   color: var(--accent);
-  background: rgba(0, 212, 255, 0.06);
-  border: 1px solid rgba(0, 212, 255, 0.28);
+  background: rgba(var(--accent-rgb), 0.06);
+  border: 1px solid rgba(var(--accent-rgb), 0.28);
   border-radius: var(--btn-radius);
   font-family: var(--font-mono);
   font-size: 10px;
@@ -420,7 +439,7 @@ body.cockpit-mode #cockpit-cloud-effects.active {
 #gev-voice-button:hover {
   color: #ffffff;
   border-color: var(--accent);
-  box-shadow: 0 0 12px rgba(0, 212, 255, 0.22);
+  box-shadow: 0 0 12px rgba(var(--accent-rgb), 0.22);
 }
 
 .gev-voice-readout {
@@ -527,7 +546,7 @@ body.cockpit-mode #cockpit-cloud-effects.active {
   display: block;
   width: 52px;
   height: auto;
-  filter: drop-shadow(0 0 12px rgba(0, 246, 255, 0.5));
+  filter: drop-shadow(0 0 12px rgba(var(--accent-rgb), 0.5));
 }
 
 #title-bar .title-logo::before,
@@ -586,7 +605,7 @@ body.cockpit-mode #cockpit-cloud-effects.active {
 }
 
 .brand-logo {
-  aspect-ratio: 775 / 520;
+  aspect-ratio: 775 / 628;
   overflow: visible;
   pointer-events: none;
 }

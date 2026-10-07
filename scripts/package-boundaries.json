@@ -111,9 +111,10 @@
     "exports": ["./server/providers/terrain"],
     "modules": [
       "server/providers/terrain.js",
-      "src/data/terrainHeightsProxy.js"
+      "src/data/terrainHeightsProxy.js",
+      "server/providers/elevation3dep.js"
     ],
-    "external": []
+    "external": ["geotiff"]
   },
   "terrain-source": {
     "exports": ["./sources/terrain"],
@@ -669,7 +670,9 @@
       "src/ui/styles/first-run.css",
       "src/ui/styles/provider-settings.css",
       "src/ui/styles/weather.css",
-      "src/ui/styles/recent-imagery.css"
+      "src/ui/styles/recent-imagery.css",
+      "src/ui/styles/site-tray.css",
+      "src/ui/styles/theme-omni.css"
     ],
     "external": []
   },
@@ -2063,7 +2066,16 @@
       "src/tools/functions.js",
       "src/voice/actionSchemas.js",
       "src/view/index.js",
-      "src/app/embed.js"
+      "src/app/embed.js",
+      "src/services/siteGeometry.js",
+      "src/services/siteBoundary.js",
+      "src/services/siteContours.js",
+      "src/services/contourMath.js",
+      "src/ui/siteTray.js",
+      "src/app/layers/osmStreets.js",
+      "src/layers/osmStreets/index.js",
+      "src/layers/osmStreets/records.js",
+      "src/layers/osmStreets/source.js"
     ],
     "external": [
       "hls.js",
@@ -2553,7 +2565,11 @@
       "src/data/local_data/osm_military_names/names.json",
       "src/layers/installations/namedMarkers.js",
       "src/data/infrastructureOverlayEntry.js",
-      "src/sources/infrastructureData.js"
+      "src/sources/infrastructureData.js",
+      "src/app/layers/osmStreets.js",
+      "src/layers/osmStreets/index.js",
+      "src/layers/osmStreets/records.js",
+      "src/layers/osmStreets/source.js"
     ],
     "external": [
       "hls.js",

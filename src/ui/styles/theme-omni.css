@@ -1,0 +1,42 @@
+/* ── OSINT OMNI theme: on/selected surfaces fade crimson → violet ── */
+.style-btn.active,
+.pp-toggle-btn.active,
+.map-stack-chip.active,
+.location-pill.active,
+.poi-pill.active,
+.panel-layer-toggle.active,
+.context-radio-toggle.active,
+.context-mode-button.active,
+.data-toggle-btn.active,
+.data-toggle-chip.active,
+.data-row-list-item.active,
+#cctv-enable-btn.active,
+#cctv-coverage-btn.active,
+#cctv-auto-hop-btn.active,
+#cctv-projection-btn.active,
+.features-code-toggle:hover,
+#features-code.open .features-code-toggle,
+.site-tray-toggle:hover,
+#site-tray.open .site-tray-toggle {
+  background: var(--accent-fade);
+}
+
+.pp-mode-btn.active,
+.bhote-event-actions button[data-action='cinematic'][aria-pressed='true'] {
+  background: var(--accent-fade-strong);
+}
+
+.title-accent {
+  background: var(--accent-fade-strong);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* The longer OSINT OMNI tagline needs tighter tracking to fit the title bar. */
+#title-bar .subtitle {
+  max-width: 26rem;
+  font-size: 10px;
+  line-height: 1.5;
+  letter-spacing: 2px;
+}

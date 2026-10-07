@@ -23,7 +23,7 @@
   inset: -18px;
   background: radial-gradient(
     ellipse at center,
-    rgba(0, 212, 255, 0.16) 0%,
+    rgba(var(--accent-rgb), 0.16) 0%,
     transparent 65%
   );
   filter: blur(16px);
@@ -43,7 +43,7 @@
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
-  scrollbar-color: rgba(0, 212, 255, 0.46) transparent;
+  scrollbar-color: rgba(var(--accent-rgb), 0.46) transparent;
 }
 #weather-panel.collapsed #weather-panel-body,
 #weather-panel[hidden],
@@ -86,7 +86,7 @@
   border-color: #79c2ff;
 }
 .rail-card.is-open {
-  border-color: rgba(0, 212, 255, 0.55);
+  border-color: rgba(var(--accent-rgb), 0.55);
   background: rgba(42, 113, 171, 0.09);
 }
 .rail-card-labels {

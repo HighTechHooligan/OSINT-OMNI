@@ -25,7 +25,7 @@
   inset: -18px;
   background: radial-gradient(
     ellipse at center,
-    rgba(0, 212, 255, 0.16) 0%,
+    rgba(var(--accent-rgb), 0.16) 0%,
     transparent 65%
   );
   filter: blur(16px);
@@ -47,7 +47,7 @@
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
-  scrollbar-color: rgba(0, 212, 255, 0.46) transparent;
+  scrollbar-color: rgba(var(--accent-rgb), 0.46) transparent;
 }
 #recent-imagery-panel.collapsed #recent-imagery-panel-body,
 #recent-imagery-panel.collapsed #recent-imagery-panel-count,
