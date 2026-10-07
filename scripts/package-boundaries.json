@@ -2083,7 +2083,9 @@
       "src/services/siteBuildings.js",
       "src/tools/locationResearch.js",
       "src/ui/dossierPanel.js",
-      "src/ui/popoutPanels.js"
+      "src/ui/popoutPanels.js",
+      "src/services/surveyGeometry.js",
+      "src/ui/coordinatePaste.js"
     ],
     "external": [
       "hls.js",

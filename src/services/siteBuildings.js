@@ -11,8 +11,8 @@
  *     the Google 3D mesh on a grid and keep blobs that are rectangular with
  *     vertical walls (buildingMath.detectBuildingsFromHeights).
  *
- * Area: inside the site boundary when one is loaded, otherwise a square
- * around the centre of the view.
+ * Area: only inside the site (KML) boundary; with no boundary loaded,
+ * building mode refuses and asks for one.
  */
 import * as Cesium from 'cesium';
 import { governorRequestRender } from '../renderGovernor.js';
@@ -34,7 +34,6 @@ import {
 import { boundaryAreaM2, boundaryBbox, pointInRing } from './siteGeometry.js';
 
 export const BUILDING_DEFAULTS = Object.freeze({
-  viewHalfSizeM: 250,
   meshMaxSamples: 30_000,
   meshMinCellM: 1.5,
   sampleBatch: 500,
@@ -49,19 +48,6 @@ const COLORS = Object.freeze({
 });
 const ALPHA = { building: 0.55, buildingMesh: 0.55, road: 0.85, park: 0.35 };
 const M_PER_DEG_LAT = 111_320;
-
-/** Square ring (closed) of half-size `halfM` around [lon, lat]. */
-export function squareAround([lon, lat], halfM) {
-  const dLat = halfM / M_PER_DEG_LAT;
-  const dLon = halfM / (M_PER_DEG_LAT * Math.cos((lat * Math.PI) / 180));
-  return [
-    [lon - dLon, lat - dLat],
-    [lon + dLon, lat - dLat],
-    [lon + dLon, lat + dLat],
-    [lon - dLon, lat + dLat],
-    [lon - dLon, lat - dLat],
-  ];
-}
 
 /** Push each vertex `m` metres away from the ring centre. */
 function grow(ring, m) {
@@ -128,34 +114,17 @@ export function createSiteBuildings(
     return false;
   }
 
+  /** Building mode only works inside the site (KML) boundary. */
   function resolveArea() {
-    if (boundary?.site) {
-      const ring = boundary.site.boundary;
-      return {
-        ring,
-        bbox: boundaryBbox(ring),
-        label: boundary.site.name || 'site boundary',
-      };
-    }
-    const canvas = scene.canvas;
-    const mid = new Cesium.Cartesian2(
-      canvas.clientWidth / 2,
-      canvas.clientHeight / 2,
-    );
-    let cart = scene.pickPositionSupported ? scene.pickPosition(mid) : null;
-    if (!cart) cart = viewer.camera.pickEllipsoid(mid, scene.globe.ellipsoid);
-    if (!cart)
-      throw new Error('Point the view at the ground, or load a site boundary.');
-    const c = Cesium.Cartographic.fromCartesian(cart);
-    const center = [
-      Cesium.Math.toDegrees(c.longitude),
-      Cesium.Math.toDegrees(c.latitude),
-    ];
-    const ring = squareAround(center, BUILDING_DEFAULTS.viewHalfSizeM);
+    if (!boundary?.site)
+      throw new Error(
+        'Building mode works inside a site boundary. Import a KML, paste coordinates, draw one, or add a radius circle first.',
+      );
+    const ring = boundary.site.boundary;
     return {
       ring,
       bbox: boundaryBbox(ring),
-      label: '500 m around the view centre',
+      label: boundary.site.name || 'site boundary',
     };
   }
 
@@ -707,6 +676,10 @@ export function createSiteBuildings(
   // A new boundary changes the area: re-run while on.
   const offBoundary = boundary?.onChange?.(() => {
     if (!state.on || boundary.isDrawing) return;
+    if (!boundary.site) {
+      hide();
+      return;
+    }
     show().catch((error) => console.warn('[site-buildings]', error?.message));
   });
 

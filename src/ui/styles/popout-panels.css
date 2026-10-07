@@ -258,3 +258,49 @@
     width: auto !important;
   }
 }
+
+/* Paste-coordinates panel and the SITE radius input */
+.coord-paste-text,
+.site-tray-input,
+.coord-paste-row select {
+  box-sizing: border-box;
+  color: var(--text-primary, #e8eaed);
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  font: inherit;
+}
+
+.coord-paste-text {
+  width: 100%;
+  min-height: 9rem;
+  padding: 0.5rem;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  resize: vertical;
+}
+
+.site-tray-input {
+  min-width: 0;
+  padding: 0.3rem 0.5rem;
+  font-size: 11px;
+}
+
+.coord-paste-text:focus-visible,
+.site-tray-input:focus-visible {
+  outline: 2px solid rgba(var(--accent-rgb, 179, 71, 240), 0.9);
+  outline-offset: 1px;
+}
+
+.coord-paste-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 0.5rem 0;
+  color: var(--text-secondary, rgba(232, 234, 237, 0.6));
+}
+
+.coord-paste-row select {
+  margin-left: 0.3rem;
+  padding: 0.15rem 0.3rem;
+}

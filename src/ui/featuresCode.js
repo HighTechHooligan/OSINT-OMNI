@@ -6,10 +6,17 @@
  * call later; the `js` escape hatch is for the person at the keyboard only.
  */
 
+import { parseLength } from '../services/surveyGeometry.js';
+import { openCoordinatePaste } from './coordinatePaste.js';
+
 export const FEATURES_CODE_HELP = `Every feature here is also in the SITE panel in the dock.
 Boundary
   boundary draw            click corners on the map; double-click/Enter finishes
-  boundary import | load   pick a .kml or .kmz (first polygon/line = boundary)
+  boundary import | load   pick a .kml/.kmz, or a .csv/.txt coordinate list
+  circle <radius> [lat,lon]  radius circle (150 m, 500 ft); no lat,lon = click centre
+  snap <deg> | snap off    angle snap while drawing (5/15/30/45/90)
+  paste                    open the paste box (CSV, "lat, lon" lines, KML)
+  coords <lat,lon; ...>    import coordinates typed inline as survey outline
   boundary export          save the boundary as .kml
   boundary clear | clear   remove the boundary
   preset hyland            load the Hyland Hills boundary + GCPs
@@ -19,7 +26,7 @@ Contours (USGS 3DEP bare earth, inside the boundary)
   contour <ft>             set the interval, 2-100 ft (also: set contour <ft>)
   contour align on | off   snap contours to the Google 3D mesh (measured per site)
   canopy on | off          shade tree/structure cover from the Google 3D mesh
-Buildings (inside the boundary, or 500 m around the view)
+Buildings (only inside the site boundary)
   buildings on | off       switch the view from topography to buildings and back
   buildings mesh | osm     find buildings from the 3D mesh scan or OSM only
   dossier <n>              open the dossier for building n of "buildings list"
@@ -89,6 +96,7 @@ export function createFeatureCommands({
   viewer,
   getDataManager = () => null,
   panels = null,
+  openPaste = null,
   allowEval = false,
   recordTitle = 'DJI LIDAR L2+ORTHO',
 }) {
@@ -240,6 +248,56 @@ export function createFeatureCommands({
       });
       line.textContent = `Canopy: ${state.canopy.coveredPct}% of the site under trees/structures (${state.canopy.cellM} m cells)`;
       line.className = 'fc-ok';
+    },
+    async circle([radius, at]) {
+      const radiusM = parseLength(radius ?? '');
+      if (!radiusM)
+        return print(
+          'Usage: circle <radius> [lat,lon], e.g. circle 500ft',
+          'err',
+        );
+      if (at) {
+        const [lat, lon] = at.split(',').map(Number);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon))
+          return print('Centre as lat,lon, e.g. 44.8402,-93.3666', 'err');
+        return loadedLine(await boundary.setCircle([lon, lat], radiusM));
+      }
+      print('Click the circle centre on the map. Esc cancels.', 'dim');
+      const done = await boundary.startCircle({
+        radiusM,
+        onHint: (t) => print(t, 'dim'),
+      });
+      return done ? loadedLine(done) : null;
+    },
+    snap([value]) {
+      const off = switchArg(value) === false;
+      const deg = off ? 0 : Number(value);
+      if (!off && !(deg >= 0 && deg <= 90))
+        return print(
+          `Snap is ${boundary.snapDeg || 'off'}°. Usage: snap <deg> | snap off`,
+          'dim',
+        );
+      boundary.snapDeg = deg;
+      print(
+        deg ? `Drawing snaps to ${deg}° (hold Alt for free)` : 'Snapping off',
+        'ok',
+      );
+    },
+    paste() {
+      if (!openPaste) return print('Paste box not available', 'err');
+      openPaste();
+      print('Paste box open: paste CSV, "lat, lon" lines or KML', 'ok');
+    },
+    async coords(_args, raw) {
+      if (!raw)
+        return print(
+          'Usage: coords 44.84,-93.36; 44.85,-93.35; 44.85,-93.37',
+          'err',
+        );
+      const out = await boundary.importText(raw.split(';').join('\n'), {
+        mode: 'outline',
+      });
+      loadedLine(out.site);
     },
     async buildings([value]) {
       if (!buildings) return print('Building mode is not available', 'err');
@@ -428,6 +486,14 @@ export function mountFeaturesCode({
     pickFile,
     viewer,
     panels,
+    openPaste: panels
+      ? () =>
+          openCoordinatePaste({
+            panels,
+            boundary: site.boundary,
+            orbit: site.orbit,
+          })
+      : null,
     allowEval: Boolean(import.meta.env?.DEV),
   });
 

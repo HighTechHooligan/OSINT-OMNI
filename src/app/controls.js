@@ -85,6 +85,7 @@ export function createApplicationControls({
   defer(() => featuresCode.destroy());
   const siteTray = mountSiteTray({
     site,
+    panels: popoutPanels,
     onOpenFeaturesCode: () => featuresCode.open(),
   });
   defer(() => siteTray.destroy());

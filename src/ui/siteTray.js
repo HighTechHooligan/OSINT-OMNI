@@ -5,6 +5,8 @@
  * orbit/record. Features Code exposes the same actions as commands; both
  * call the same services.
  */
+import { openCoordinatePaste } from './coordinatePaste.js';
+import { parseLength, SNAP_STEPS_DEG } from '../services/surveyGeometry.js';
 import {
   CONTOUR_MAX_FT,
   CONTOUR_MIN_FT,
@@ -16,7 +18,12 @@ const ACRES = (s) => (s?.areaAcres != null ? `${s.areaAcres} ac` : '');
 const fmtShift = (m, pos, neg) =>
   `${Math.abs(m).toFixed(1)} m ${m >= 0 ? pos : neg}`;
 
-export function mountSiteTray({ site, dock, onOpenFeaturesCode } = {}) {
+export function mountSiteTray({
+  site,
+  dock,
+  onOpenFeaturesCode,
+  panels = null,
+} = {}) {
   const { boundary, orbit, contours, buildings } = site;
   const host = dock ?? document.getElementById('command-dock');
   const item = document.createElement('div');
@@ -53,8 +60,19 @@ export function mountSiteTray({ site, dock, onOpenFeaturesCode } = {}) {
         <p class="site-tray-status" data-st="boundary-status">No boundary yet</p>
         <div class="site-tray-row">
           <button type="button" data-st="draw">Draw</button>
-          <button type="button" data-st="import">Import KML/KMZ</button>
+          <button type="button" data-st="import" title="KML, KMZ, or a CSV/TXT list of coordinates">Import KML/CSV</button>
+          <button type="button" data-st="paste" title="Paste a coordinate list or KML">Paste coords</button>
           <button type="button" data-st="export" disabled>Export KML</button>
+        </div>
+        <div class="site-tray-row">
+          <button type="button" data-st="circle" title="Click a centre; type a radius or click the edge">Radius circle</button>
+          <input type="text" class="site-tray-input" data-st="radius" inputmode="decimal"
+            placeholder="radius: 150 m, 500 ft" aria-label="Circle radius" size="12" />
+          <label class="site-tray-select">Snap
+            <select data-st="snap" aria-label="Angle snap while drawing">
+              ${SNAP_STEPS_DEG.map((d) => `<option value="${d}"${d === 15 ? ' selected' : ''}>${d ? `${d}°` : 'Off'}</option>`).join('')}
+            </select>
+          </label>
         </div>
         <div class="site-tray-row">
           <button type="button" data-st="zoom" disabled>Zoom to</button>
@@ -131,7 +149,7 @@ export function mountSiteTray({ site, dock, onOpenFeaturesCode } = {}) {
 
   const filePicker = document.createElement('input');
   filePicker.type = 'file';
-  filePicker.accept = '.kml,.kmz';
+  filePicker.accept = '.kml,.kmz,.csv,.tsv,.txt';
   filePicker.hidden = true;
   document.body.appendChild(filePicker);
 
@@ -153,17 +171,19 @@ export function mountSiteTray({ site, dock, onOpenFeaturesCode } = {}) {
   function syncBoundary() {
     const s = boundary.describe();
     const has = Boolean(s);
-    say(
-      'boundary-status',
-      boundary.isDrawing
-        ? 'Drawing… click corners, double-click or Enter to finish'
-        : has
+    // While drawing, the draw/circle tool's own hints own the status line.
+    if (!boundary.isDrawing)
+      say(
+        'boundary-status',
+        has
           ? `${s.name} · ${ACRES(s)} · ${s.vertices} corners · ${s.points} points`
           : 'No boundary yet',
-    );
+      );
     for (const key of ['export', 'zoom', 'clear', 'orbit', 'record'])
       $(key).disabled = !has;
     $('draw').textContent = boundary.isDrawing ? 'Finish' : 'Draw';
+    $('circle').textContent = boundary.isDrawing ? 'Cancel' : 'Radius circle';
+    if (buildings) $('view-bldg').disabled = !has && !buildings.describe().on;
   }
 
   function alignNote(st) {
@@ -208,7 +228,7 @@ export function mountSiteTray({ site, dock, onOpenFeaturesCode } = {}) {
         'bldg-status',
         boundary.site
           ? 'Inside the boundary'
-          : 'No boundary: uses 500 m around the view centre',
+          : 'Needs a boundary: import a KML, paste coordinates, draw, or add a radius circle',
       );
     const c = state.counts;
     const from =
@@ -247,9 +267,48 @@ export function mountSiteTray({ site, dock, onOpenFeaturesCode } = {}) {
       const file = filePicker.files?.[0];
       if (!file) return;
       say('boundary-status', `Loading ${file.name}…`);
-      await boundary.loadKml(file, file.name.replace(/\.km[lz]$/i, ''));
+      await boundary.loadFile(file);
+      await orbit.zoom();
     }),
   );
+  $('circle').addEventListener(
+    'click',
+    guard('boundary-status', async () => {
+      if (boundary.isDrawing) return boundary.cancelDraw();
+      const typed = $('radius').value.trim();
+      const radiusM = typed ? parseLength(typed) : null;
+      if (typed && !radiusM)
+        return say(
+          'boundary-status',
+          'Radius like 150, 150 m, 500 ft or 0.5 km',
+          'err',
+        );
+      const done = boundary.startCircle({
+        radiusM,
+        onHint: (t) => say('boundary-status', t),
+      });
+      syncBoundary();
+      await done;
+      syncBoundary();
+    }),
+  );
+  $('snap').addEventListener('change', () => {
+    boundary.snapDeg = Number($('snap').value);
+  });
+  boundary.snapDeg = Number($('snap').value);
+  const openPaste = (initialText = '') =>
+    panels
+      ? openCoordinatePaste({ panels, boundary, orbit, initialText })
+      : say('boundary-status', 'Paste needs the pop-out panels', 'err');
+  $('paste').addEventListener('click', () => openPaste());
+  // Ctrl/Cmd+V anywhere in the open tray (outside inputs) imports the clipboard.
+  panel.addEventListener('paste', (event) => {
+    if (event.target?.closest?.('input, textarea, select')) return;
+    const text = event.clipboardData?.getData('text');
+    if (!text?.trim()) return;
+    event.preventDefault();
+    openPaste(text);
+  });
   $('export').addEventListener(
     'click',
     guard('boundary-status', () =>
