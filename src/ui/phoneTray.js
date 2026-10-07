@@ -104,10 +104,13 @@ export function mountPhoneTray({ phone, dock } = {}) {
     if (state)
       say(
         'urls',
-        state.lanReady
-          ? `On the phone, open ${state.urls.join(' or ') || '(no network address found)'}`
-          : state.hint,
-        state.lanReady ? '' : 'err',
+        state.lanReady && state.urls.length
+          ? `On the phone, open ${state.urls[0]}` +
+              (state.urls.length > 1
+                ? ` (if that fails: ${state.urls.slice(1).join(', ')})`
+                : '')
+          : `${state.hint}${state.urls.length ? ` Then open ${state.urls[0]} on the phone.` : ''}`,
+        state.lanReady && state.urls.length ? 'ok' : 'err',
       );
     const devices = state?.devices ?? [];
     $('devices').replaceChildren(

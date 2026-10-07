@@ -13,6 +13,8 @@ import {
   stableKey,
 } from '../../server/remote/hub.js';
 import {
+  describePhoneAccess,
+  lanAddresses,
   createPhoneCatalog,
   createRemoteHandler,
   listensOnLan,
@@ -327,5 +329,39 @@ test('the phone API is off while launcher sharing is on', async (t) => {
   assert.equal(
     (await request('/remote/desk/pair', { method: 'POST', body: {} })).status,
     403,
+  );
+});
+
+test('phone addresses list real LAN adapters first and still show before a LAN restart', () => {
+  const v4 = (address) => ({ family: 'IPv4', internal: false, address });
+  assert.deepEqual(
+    lanAddresses({
+      'vEthernet (WSL)': [v4('172.20.0.1')],
+      Ethernet: [
+        v4('192.168.1.20'),
+        { family: 'IPv6', internal: false, address: 'fe80::1' },
+      ],
+      'Wi-Fi': [v4('169.254.3.3')],
+      Loopback: [{ family: 'IPv4', internal: true, address: '127.0.0.1' }],
+    }),
+    ['192.168.1.20', '172.20.0.1'],
+  );
+  const local = describePhoneAccess({
+    address: { address: '127.0.0.1' },
+    port: 4173,
+    ips: ['192.168.1.20'],
+  });
+  assert.equal(local.lanReady, false);
+  assert.deepEqual(local.urls, ['http://192.168.1.20:4173/phone/']);
+  assert.match(local.hint, /npm run dev:lan/);
+  const lan = describePhoneAccess({
+    address: { address: '0.0.0.0' },
+    port: 4173,
+    ips: ['192.168.1.20'],
+  });
+  assert.equal(lan.hint, null);
+  assert.match(
+    describePhoneAccess({ address: { address: '::' }, port: 1, ips: [] }).hint,
+    /No network address/,
   );
 });

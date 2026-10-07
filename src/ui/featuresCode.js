@@ -324,10 +324,10 @@ export function createFeatureCommands({
             'ok',
           );
           return print(
-            state.lanReady
+            state.lanReady && state.urls.length
               ? `On the phone, open ${state.urls.join(' or ')}`
-              : state.hint,
-            state.lanReady ? 'dim' : 'err',
+              : `${state.hint}${state.urls.length ? ` Then open ${state.urls[0]} on the phone.` : ''}`,
+            state.lanReady && state.urls.length ? 'ok' : 'err',
           );
         }
         case 'devices':

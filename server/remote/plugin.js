@@ -57,11 +57,27 @@ export async function readAccentTokens(
   return /:root\s*\{[\s\S]*?\n\}/.exec(css)?.[0] ?? '';
 }
 
-/** This computer's IPv4 LAN addresses. */
+/** Adapter names that are virtual, so a phone can't reach them. */
+const VIRTUAL_ADAPTER =
+  /vethernet|virtualbox|vmware|vmnet|docker|wsl|hyper-v|loopback|bridge|utun|tailscale|zerotier/i;
+
+/**
+ * This computer's IPv4 LAN addresses, most likely first: real adapters on
+ * private ranges, then anything else. Link-local (169.254.x) is dropped.
+ */
 export function lanAddresses(interfaces = networkInterfaces()) {
-  return Object.values(interfaces)
-    .flat()
-    .filter((i) => i && i.family === 'IPv4' && !i.internal)
+  const rank = ({ name, address }) =>
+    (VIRTUAL_ADAPTER.test(name) ? 2 : 0) +
+    (/^(192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(address) ? 0 : 1);
+  return Object.entries(interfaces)
+    .flatMap(([name, list]) => (list ?? []).map((i) => ({ ...i, name })))
+    .filter(
+      (i) =>
+        (i.family === 'IPv4' || i.family === 4) &&
+        !i.internal &&
+        !i.address.startsWith('169.254.'),
+    )
+    .sort((a, b) => rank(a) - rank(b))
     .map((i) => i.address);
 }
 
@@ -69,6 +85,26 @@ export function lanAddresses(interfaces = networkInterfaces()) {
 export function listensOnLan(address) {
   const host = typeof address === 'object' ? address?.address : null;
   return Boolean(host) && !['127.0.0.1', '::1', 'localhost'].includes(host);
+}
+
+/**
+ * Where a phone should go, and why it can't yet. The addresses are listed
+ * even before the server listens on the network, so the person can see
+ * what the phone will open once it is restarted for the LAN.
+ */
+export function describePhoneAccess({ address, port, protocol = 'http', ips }) {
+  const lanReady = listensOnLan(address);
+  const urls = ips.map((ip) => `${protocol}://${ip}:${port}/phone/`);
+  let hint = null;
+  if (!lanReady)
+    hint =
+      'Phones cannot reach this server yet: it only listens on this computer. ' +
+      'Stop it and start it with "npm run dev:lan" (or "npm run preview:lan" for a build). ' +
+      'That works the same in PowerShell, cmd and bash.';
+  else if (!urls.length)
+    hint =
+      'No network address found. Connect this computer to the same network as the phone.';
+  return { lanReady, urls, hint };
 }
 
 /** The tool catalog the phone sees, with answers cached on this computer. */
@@ -126,16 +162,12 @@ export function createRemoteHandler({
 
   function phoneUrls(req) {
     const port = req.socket?.localPort ?? 4173;
-    const lan = listensOnLan(boundAddress());
-    return {
-      lanReady: lan,
-      urls: lan
-        ? addresses().map((ip) => `${protocolOf(req)}://${ip}:${port}/phone/`)
-        : [],
-      hint: lan
-        ? null
-        : 'This server only listens on this computer. Restart it with HOST=0.0.0.0 so a phone on the same Wi-Fi can reach it.',
-    };
+    return describePhoneAccess({
+      address: boundAddress(),
+      port,
+      protocol: protocolOf(req),
+      ips: addresses(),
+    });
   }
 
   async function servePhone(req, res, name) {
@@ -381,6 +413,22 @@ export function phoneRemotePlugin(options = {}) {
     server.middlewares.use(async (req, res, next) => {
       const handled = await handle(req, res);
       if (handled === false) next();
+    });
+    // Say in the terminal where a phone should go (or why it can't).
+    server.httpServer?.once('listening', () => {
+      const address = server.httpServer.address();
+      const access = describePhoneAccess({
+        address,
+        port: address?.port ?? 4173,
+        protocol: server.config?.server?.https ? 'https' : 'http',
+        ips: (options.addresses ?? lanAddresses)(),
+      });
+      const log = server.config?.logger?.info ?? console.log;
+      if (access.lanReady && access.urls.length)
+        log(
+          `  ➜  Phone:   ${access.urls[0]}${access.urls.length > 1 ? `  (also ${access.urls.slice(1).join(', ')})` : ''}`,
+        );
+      else log(`  ➜  Phone:   ${access.hint}`);
     });
   };
   return {
