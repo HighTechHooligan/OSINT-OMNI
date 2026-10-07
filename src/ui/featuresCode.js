@@ -7,10 +7,21 @@
  */
 import { normalizeDatum } from '../services/contourMath.js';
 
+import { parseLength } from '../services/surveyGeometry.js';
+import { dedicatedGpuAdvice } from '../services/viewshedGpu.js';
+import { parseShapeText } from '../services/viewshedShapes.js';
+import { resultLine } from './viewshedTray.js';
+import { parseHeightM, parseHeightRange } from '../services/viewshedMath.js';
+import { openCoordinatePaste } from './coordinatePaste.js';
+
 export const FEATURES_CODE_HELP = `Every feature here is also in the SITE panel in the dock.
 Boundary
   boundary draw            click corners on the map; double-click/Enter finishes
-  boundary import | load   pick a .kml or .kmz (first polygon/line = boundary)
+  boundary import | load   pick a .kml/.kmz, or a .csv/.txt coordinate list
+  circle <radius> [lat,lon]  radius circle (150 m, 500 ft); no lat,lon = click centre
+  snap <deg> | snap off    angle snap while drawing (5/15/30/45/90)
+  paste                    open the paste box (CSV, "lat, lon" lines, KML)
+  coords <lat,lon; ...>    import coordinates typed inline as survey outline
   boundary export          save the boundary as .kml
   boundary clear | clear   remove the boundary
   preset hyland            load the Hyland Hills boundary + GCPs
@@ -23,6 +34,27 @@ Contours (USGS 3DEP bare earth, inside the boundary)
                            (also: datum <mode>, set elev <mode>)
   contour align on | off   snap contours to the Google 3D mesh (measured per site)
   canopy on | off          shade tree/structure cover from the Google 3D mesh
+Buildings (only inside the site boundary)
+  buildings on | off       switch the view from topography to buildings and back
+  buildings mesh | osm     find buildings from the 3D mesh scan or OSM only
+  dossier <n>              open the dossier for building n of "buildings list"
+  buildings list           list what building mode found
+  panels close             close every pop-out panel
+Viewshed (VIEWSHED tab; reach 1 km by default)
+  viewshed [eye]           click the observer spot; eye height (1.7m, 30ft)
+                           or a band (0-2.5m: green = low eye, amber = high only)
+  viewshed <lat,lon> [eye] [target]  observer at lat,lon; target 0 = ground
+  viewshed route [lat,lon; lat,lon; …]  click a walking path or drive, or give it
+  viewshed area [site | lat,lon; …]  click a park or area, or use the SITE boundary
+  viewshed circle [radius]  radius circle: click the centre (and the edge)
+  viewshed reach <1 km>    how far to look from the shape (up to 5 km)
+  viewshed clip on | off   keep the viewshed inside the SITE boundary
+  viewshed mesh | dem | auto  heights: 3D mesh (buildings + trees block),
+                           USGS bare earth, or auto (mesh when it is on)
+  viewshed gpu dedicated | integrated | cpu  which processor runs it
+  viewshed gpu             the GPU in use, and how to switch to the dedicated one
+  viewshed orbit [stop]    orbit the observer and its reach
+  viewshed off             clear the viewshed
 Camera
   zoom                     fly to the boundary
   orbit [sec]              live orbit, seconds per revolution (default 24)
@@ -104,10 +136,22 @@ export function createFeatureCommands({
   pickFile,
   viewer,
   getDataManager = () => null,
+  panels = null,
+  openPaste = null,
   allowEval = false,
   recordTitle = 'DJI LIDAR L2+ORTHO',
 }) {
-  const { boundary, orbit, contours } = site;
+  const { boundary, orbit, contours, buildings, viewshed, viewshedOrbit } =
+    site;
+  function viewshedLine(state) {
+    const r = state?.result;
+    if (!r)
+      return print(
+        state === null ? 'Cancelled' : 'No viewshed',
+        state === null ? 'dim' : 'err',
+      );
+    print(`Viewshed (${r.shapeLabel ?? 'Point'}): ${resultLine(r)}`, 'ok');
+  }
   const loadedLine = (summary) =>
     print(`Loaded ${describeSite(summary)}`, 'ok');
 
@@ -279,6 +323,220 @@ export function createFeatureCommands({
       line.textContent = `Canopy: ${state.canopy.coveredPct}% of the site under trees/structures (${state.canopy.cellM} m cells)`;
       line.className = 'fc-ok';
     },
+    async circle([radius, at]) {
+      const radiusM = parseLength(radius ?? '');
+      if (!radiusM)
+        return print(
+          'Usage: circle <radius> [lat,lon], e.g. circle 500ft',
+          'err',
+        );
+      if (at) {
+        const [lat, lon] = at.split(',').map(Number);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon))
+          return print('Centre as lat,lon, e.g. 44.8402,-93.3666', 'err');
+        return loadedLine(await boundary.setCircle([lon, lat], radiusM));
+      }
+      print('Click the circle centre on the map. Esc cancels.', 'dim');
+      const done = await boundary.startCircle({
+        radiusM,
+        onHint: (t) => print(t, 'dim'),
+      });
+      return done ? loadedLine(done) : null;
+    },
+    snap([value]) {
+      const off = switchArg(value) === false;
+      const deg = off ? 0 : Number(value);
+      if (!off && !(deg >= 0 && deg <= 90))
+        return print(
+          `Snap is ${boundary.snapDeg || 'off'}°. Usage: snap <deg> | snap off`,
+          'dim',
+        );
+      boundary.snapDeg = deg;
+      print(
+        deg ? `Drawing snaps to ${deg}° (hold Alt for free)` : 'Snapping off',
+        'ok',
+      );
+    },
+    paste() {
+      if (!openPaste) return print('Paste box not available', 'err');
+      openPaste();
+      print('Paste box open: paste CSV, "lat, lon" lines or KML', 'ok');
+    },
+    async coords(_args, raw) {
+      if (!raw)
+        return print(
+          'Usage: coords 44.84,-93.36; 44.85,-93.35; 44.85,-93.37',
+          'err',
+        );
+      const out = await boundary.importText(raw.split(';').join('\n'), {
+        mode: 'outline',
+      });
+      loadedLine(out.site);
+    },
+    async buildings([value]) {
+      if (!buildings) return print('Building mode is not available', 'err');
+      const v = String(value ?? '').toLowerCase();
+      if (v === 'list') {
+        const list = buildings.list().filter((r) => r.kind === 'building');
+        if (!list.length)
+          return print('No buildings yet. Run "buildings on".', 'dim');
+        return print(
+          list
+            .slice(0, 40)
+            .map(
+              (r, i) =>
+                `${i + 1}. ${r.tags.name || r.id} · ${Math.round(r.measure.areaM2)} m² · ${r.height.heightM.toFixed(1)} m · ${Math.round(r.volumeM3)} m³`,
+            )
+            .join('\n'),
+          'dim',
+        );
+      }
+      const on =
+        v === 'mesh' || v === 'osm'
+          ? true
+          : (switchArg(v) ?? !buildings.describe().on);
+      if (!on) {
+        await buildings.hide();
+        return print('Back to topography', 'ok');
+      }
+      const line = print('Finding buildings…', 'dim');
+      const state = await buildings.show({
+        source: v === 'mesh' || v === 'osm' ? v : 'auto',
+      });
+      const c = state.counts;
+      line.textContent = `${c.buildings} buildings · ${c.roads} roads · ${c.parks} parks (${state.source})${state.osmError ? ` · OSM: ${state.osmError}` : ''}. Click one for its dossier.`;
+      line.className = 'fc-ok';
+    },
+    async viewshed(args, raw = args.join(' ')) {
+      if (!viewshed) return print('Viewshed is not available', 'err');
+      const [first, ...rest] = args;
+      const tail = raw
+        .slice(raw.indexOf(first ?? '') + (first ?? '').length)
+        .trim();
+      if (switchArg(first) === false) {
+        viewshed.clear();
+        return print('Viewshed cleared', 'ok');
+      }
+      const recompute = async (note) => {
+        if (!viewshed.describe().shape) return print(note, 'ok');
+        return viewshedLine(await viewshed.compute());
+      };
+      if (first === 'gpu') {
+        const mode = rest[0];
+        if (!['dedicated', 'integrated', 'cpu'].includes(mode)) {
+          const d = viewshed.describe();
+          print(
+            `Computing on: ${d.gpu}${d.renderer ? ` (${d.renderer}, ${d.gpuKind})` : ''}. Usage: viewshed gpu dedicated|integrated|cpu`,
+            'dim',
+          );
+          const advice = dedicatedGpuAdvice(
+            d.gpuKind,
+            d.renderer,
+            globalThis.navigator?.userAgentData?.platform ||
+              globalThis.navigator?.platform,
+          );
+          return advice && print(advice, 'err');
+        }
+        viewshed.setOptions({ gpu: mode });
+        return recompute(`Viewshed will compute on: ${mode}`);
+      }
+      if (['mesh', 'dem', 'auto'].includes(first)) {
+        viewshed.setOptions({ source: first });
+        return recompute(
+          `Viewshed heights: ${first}. Run "viewshed" to place an observer.`,
+        );
+      }
+      if (first === 'reach') {
+        const reachM = parseLength(tail);
+        if (reachM == null)
+          return print(
+            `Reach: ${viewshed.describe().reachM} m. Usage: viewshed reach 1 km`,
+            'dim',
+          );
+        viewshed.setOptions({ reachM });
+        return recompute(`Viewshed reach: ${Math.round(reachM)} m`);
+      }
+      if (first === 'clip') {
+        const on = switchArg(rest[0]);
+        if (on === null) return print('Usage: viewshed clip on|off', 'dim');
+        viewshed.setOptions({ clip: on });
+        return recompute(
+          `Viewshed ${on ? 'clipped to' : 'not limited to'} the SITE boundary`,
+        );
+      }
+      if (first === 'orbit') {
+        if (!viewshedOrbit) return print('Orbit is not available', 'err');
+        if (switchArg(rest[0]) === false || rest[0] === 'stop') {
+          viewshedOrbit.stop();
+          return print('Orbit stopped', 'ok');
+        }
+        await viewshedOrbit.zoom();
+        viewshedOrbit.orbit();
+        return print(
+          'Orbiting the viewshed. "viewshed orbit stop" stops.',
+          'ok',
+        );
+      }
+      if (first === 'route' || first === 'area') {
+        const kind = first === 'route' ? 'line' : 'area';
+        if (kind === 'area' && rest[0] === 'site') {
+          print('Tracing sight lines from the SITE boundary…', 'dim');
+          return viewshedLine(await viewshed.useSiteBoundary());
+        }
+        if (tail) {
+          const shape = parseShapeText(tail, kind);
+          print('Tracing sight lines…', 'dim');
+          return viewshedLine(await viewshed.compute({ shape }));
+        }
+        print(
+          `Click ${kind === 'line' ? 'along the route' : 'the corners of the area'}; double-click or Enter finishes, Esc cancels.`,
+          'dim',
+        );
+        return viewshedLine(await viewshed.pickShape(kind));
+      }
+      if (first === 'circle') {
+        const radiusM = tail ? parseLength(tail) : null;
+        if (tail && radiusM == null)
+          return print('Radius like 150 m, 500 ft or 0.5 km', 'err');
+        print('Click the circle centre. Esc cancels.', 'dim');
+        return viewshedLine(await viewshed.pickShape('circle', { radiusM }));
+      }
+      let at = null;
+      let heights = args;
+      if (first?.includes(',')) {
+        const [lat, lon] = first.split(',').map(Number);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon))
+          return print('Observer as lat,lon, e.g. 44.8402,-93.3666', 'err');
+        at = [lon, lat];
+        heights = rest;
+      }
+      const [eyeText, targetText] = heights;
+      const eye = eyeText != null ? parseHeightRange(eyeText) : undefined;
+      const targetM = targetText != null ? parseHeightM(targetText) : undefined;
+      if (eye === null || targetM === null)
+        return print('Eye like 1.7, 10m, 30ft or a band like 0-2.5m', 'err');
+      const opts = { lowM: eye?.lowM, highM: eye?.highM, targetM };
+      if (at) {
+        print('Tracing sight lines…', 'dim');
+        return viewshedLine(await viewshed.compute({ at, ...opts }));
+      }
+      print('Click the observer spot. Esc cancels.', 'dim');
+      return viewshedLine(await viewshed.pickObserver(opts));
+    },
+    dossier([n]) {
+      const list = buildings?.list().filter((r) => r.kind === 'building') ?? [];
+      const record = list[intArg(n, 0, 1, list.length || 1) - 1];
+      if (!record)
+        return print('Usage: dossier <n> (see "buildings list")', 'err');
+      buildings.pick(record.id);
+      print(`Opened dossier for ${record.tags.name || record.id}`, 'ok');
+    },
+    panels([action]) {
+      if (String(action).toLowerCase() !== 'close')
+        return print('Usage: panels close', 'err');
+      panels?.closeAll();
+      print('Closed all pop-out panels', 'ok');
+    },
     async layer([name, value]) {
       const id = LAYER_ALIASES[String(name ?? '').toLowerCase()] ?? name;
       const dm = getDataManager();
@@ -342,7 +600,13 @@ export function createFeatureCommands({
  * Mount the dock button and console panel.
  * @param {{ viewer: object, site: object, getDataManager?: Function, dock?: HTMLElement|null }} options
  */
-export function mountFeaturesCode({ viewer, site, getDataManager, dock } = {}) {
+export function mountFeaturesCode({
+  viewer,
+  site,
+  getDataManager,
+  dock,
+  panels,
+} = {}) {
   const host = dock ?? document.getElementById('command-dock');
   const item = document.createElement('div');
   item.id = 'features-code';
@@ -411,6 +675,15 @@ export function mountFeaturesCode({ viewer, site, getDataManager, dock } = {}) {
     clearOutput: () => out.replaceChildren(),
     pickFile,
     viewer,
+    panels,
+    openPaste: panels
+      ? () =>
+          openCoordinatePaste({
+            panels,
+            boundary: site.boundary,
+            orbit: site.orbit,
+          })
+      : null,
     allowEval: Boolean(import.meta.env?.DEV),
   });
 

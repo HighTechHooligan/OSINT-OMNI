@@ -20,11 +20,21 @@ import { claimPointer, releasePointer } from '../data/inputOwnership.js';
 import {
   boundaryAreaM2,
   boundaryBbox,
+  FEET_PER_METRE,
   normalizeBoundary,
   siteToKml,
   slug,
   summarizeBoundary,
 } from './siteGeometry.js';
+import {
+  circleRing,
+  looksLikeKml,
+  measureSegment,
+  outlineRing,
+  parseCoordinateList,
+  snapVertex,
+  wrapKml,
+} from './surveyGeometry.js';
 
 export const SITE_PRESETS = Object.freeze({
   hyland: Object.freeze({
@@ -83,6 +93,7 @@ export function createSiteBoundary(viewer) {
   let labelLayer = null;
   let removeLabelListener = null;
   let draw = null;
+  let snapDeg = 15;
 
   const emit = (reason) => {
     for (const fn of listeners) {
@@ -95,16 +106,41 @@ export function createSiteBoundary(viewer) {
   };
 
   // ---------- heights ----------
+  function hasVisibleTileset() {
+    for (let i = 0; i < scene.primitives.length; i++) {
+      const p = scene.primitives.get(i);
+      if (p instanceof Cesium.Cesium3DTileset && p.show) return true;
+    }
+    return false;
+  }
+
   async function sampleHeights(lonLats) {
     const cartos = lonLats.map(([lon, lat]) =>
       Cesium.Cartographic.fromDegrees(lon, lat),
     );
+    // Only sample the scene when a 3D tileset is showing; on a flat basemap
+    // a bogus height put the site zoom camera underground.
+    if (hasVisibleTileset())
+      try {
+        const sampled = await scene.sampleHeightMostDetailed(cartos);
+        if (sampled.every((c) => Number.isFinite(c?.height)))
+          return sampled.map((c) => c.height);
+      } catch {
+        // sampling unsupported: fall back to terrain
+      }
+    // Flat ellipsoid terrain: the ground is height 0 (globe.getHeight has
+    // been seen returning -410 m here).
+    if (viewer.terrainProvider instanceof Cesium.EllipsoidTerrainProvider)
+      return cartos.map(() => 0);
     try {
-      const sampled = await scene.sampleHeightMostDetailed(cartos);
+      const sampled = await Cesium.sampleTerrainMostDetailed(
+        viewer.terrainProvider,
+        cartos.map((c) => c.clone()),
+      );
       if (sampled.every((c) => Number.isFinite(c?.height)))
         return sampled.map((c) => c.height);
     } catch {
-      // No 3D tiles or sampling unsupported: fall back to the globe.
+      // ellipsoid or unavailable terrain: use the globe below
     }
     return cartos.map((c) => {
       const h = scene.globe?.getHeight?.(c);
@@ -289,6 +325,105 @@ export function createSiteBoundary(viewer) {
     return setSite({ ...preset, origin: 'preset' });
   }
 
+  /** A radius circle around [lon, lat] as the boundary. */
+  function setCircle(center, radiusM, name) {
+    const label = `${Math.round(radiusM)} m / ${Math.round(radiusM * FEET_PER_METRE)} ft radius`;
+    return setSite({
+      name: name || `Radius circle · ${label}`,
+      boundary: circleRing(center, radiusM),
+      points: [['CENTER', center[0], center[1]]],
+      origin: 'circle',
+    });
+  }
+
+  /**
+   * Import pasted text: KML (whole file or a fragment) or a coordinate list
+   * (CSV/TSV/"lat, lon" lines).
+   * mode 'boundary' joins the points in order; 'outline' draws the outline
+   * around them and keeps them as survey points; 'points' adds them as
+   * survey points to the current boundary (or outlines them if none).
+   * @returns {Promise<{ site: object, kind: 'kml'|'list', count: number,
+   *   skipped: number, order?: string }>}
+   */
+  async function importText(
+    text,
+    { mode = 'outline', order = 'auto', name } = {},
+  ) {
+    if (looksLikeKml(text)) {
+      const blob = new Blob([wrapKml(text)], {
+        type: 'application/vnd.google-earth.kml+xml',
+      });
+      const summary = await loadKml(blob, name || 'Pasted KML');
+      return {
+        site: summary,
+        kind: 'kml',
+        count: summary.vertices,
+        skipped: 0,
+      };
+    }
+    const parsed = parseCoordinateList(text, { order });
+    const pts = parsed.points.map((p) => [p.name, p.lon, p.lat]);
+    const lonLats = parsed.points.map((p) => [p.lon, p.lat]);
+    if (!pts.length)
+      throw new Error(
+        'No coordinates found. Paste "lat, lon" lines, CSV with lat/lon columns, or KML.',
+      );
+    let summary;
+    if (mode === 'points' && site) {
+      summary = await setSite({ ...site, points: [...site.points, ...pts] });
+    } else if (mode === 'boundary') {
+      if (lonLats.length < 3)
+        throw new Error('A boundary needs at least 3 coordinates.');
+      summary = await setSite({
+        name: name || 'Pasted boundary',
+        boundary: lonLats,
+        origin: 'paste',
+      });
+    } else {
+      const ring = outlineRing(lonLats);
+      if (!ring) {
+        if (lonLats.length === 1) {
+          // One point: a 100 m circle around it so there is an area to work in.
+          summary = await setCircle(
+            lonLats[0],
+            100,
+            name || `${pts[0][0]} · 100 m radius`,
+          );
+          summary = await setSite({ ...site, points: pts });
+        } else
+          throw new Error(
+            'Need 3 or more spread-out coordinates to outline an area.',
+          );
+      } else
+        summary = await setSite({
+          name: name || 'Pasted survey',
+          boundary: ring,
+          points: pts,
+          origin: 'paste',
+        });
+    }
+    return {
+      site: summary,
+      kind: 'list',
+      count: pts.length,
+      skipped: parsed.skipped,
+      order: parsed.order,
+    };
+  }
+
+  /** Import a picked file: .kml/.kmz through the KML loader, .csv/.txt as a list. */
+  async function loadFile(file, options = {}) {
+    if (/\.(csv|tsv|txt)$/i.test(file.name || ''))
+      return (
+        await importText(await file.text(), {
+          mode: 'outline',
+          name: file.name.replace(/\.\w+$/, ''),
+          ...options,
+        })
+      ).site;
+    return loadKml(file, (file.name || '').replace(/\.km[lz]$/i, ''));
+  }
+
   function toKml() {
     requireSite();
     return siteToKml(site);
@@ -349,6 +484,8 @@ export function createSiteBoundary(viewer) {
       throw new Error('Another tool is using the pointer. Close it first.');
     const vertices = [];
     let cursor = null;
+    let free = false; // Alt held: no snapping
+    const snapped = (p) => (p && !free ? snapVertex(vertices, p, snapDeg) : p);
     const handler = new Cesium.ScreenSpaceEventHandler(scene.canvas);
     const stock = viewer.screenSpaceEventHandler;
     const savedClick = stock.getInputAction(
@@ -375,11 +512,19 @@ export function createSiteBoundary(viewer) {
         }),
       },
     });
+    const segment = () => {
+      const last = vertices.at(-1);
+      if (!last || !cursor) return '';
+      const m = measureSegment(last, cursor);
+      return ` · ${m.lengthM.toFixed(1)} m (${Math.round(m.lengthM * FEET_PER_METRE)} ft) at ${m.bearingDeg.toFixed(0)}°`;
+    };
+    const snapNote = () =>
+      snapDeg && !free ? ` Snap ${snapDeg}° (hold Alt for free).` : '';
     const hint = () =>
       onHint(
         vertices.length < 3
-          ? `Click corners on the map (${vertices.length}/3 minimum). Esc cancels.`
-          : `${vertices.length} corners. Double-click or Enter to finish, Backspace to undo.`,
+          ? `Click corners on the map (${vertices.length}/3 minimum)${segment()}.${snapNote()} Esc cancels.`
+          : `${vertices.length} corners${segment()}. Double-click or Enter to finish, Backspace to undo.${snapNote()}`,
       );
 
     let resolveDone;
@@ -400,6 +545,7 @@ export function createSiteBoundary(viewer) {
         );
       viewer.entities.remove(preview);
       document.removeEventListener('keydown', onKey, true);
+      document.removeEventListener('keyup', onKeyUp, true);
       document.body.classList.remove('site-boundary-drawing');
       releasePointer(lease);
       draw = null;
@@ -425,7 +571,19 @@ export function createSiteBoundary(viewer) {
       onHint('Drawing cancelled.');
       resolveDone(null);
     };
+    function onKeyUp(event) {
+      if (event.key === 'Alt') {
+        free = false;
+        hint();
+      }
+    }
     function onKey(event) {
+      if (event.key === 'Alt') {
+        event.preventDefault();
+        free = true;
+        hint();
+        return;
+      }
       if (event.target?.closest?.('input, textarea')) return;
       if (event.key === 'Enter') {
         event.preventDefault();
@@ -443,7 +601,7 @@ export function createSiteBoundary(viewer) {
     }
 
     handler.setInputAction((e) => {
-      const p = pickLonLat(e.position);
+      const p = snapped(pickLonLat(e.position));
       if (!p) return;
       const last = vertices.at(-1);
       if (
@@ -457,7 +615,8 @@ export function createSiteBoundary(viewer) {
       governorRequestRender('site-boundary-draw');
     }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
     handler.setInputAction((e) => {
-      cursor = pickLonLat(e.endPosition);
+      cursor = snapped(pickLonLat(e.endPosition));
+      if (vertices.length) hint();
       governorRequestRender('site-boundary-draw');
     }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
     handler.setInputAction(
@@ -465,8 +624,122 @@ export function createSiteBoundary(viewer) {
       Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK,
     );
     document.addEventListener('keydown', onKey, true);
+    document.addEventListener('keyup', onKeyUp, true);
     draw = { finish, cancel, done };
     hint();
+    return done;
+  }
+
+  /**
+   * Radius circle: click the centre, then click again (or pass `radiusM`)
+   * to set the radius. Esc cancels.
+   * @param {{ radiusM?: number|null, onHint?: (text: string) => void }} [options]
+   */
+  function startCircle({ radiusM = null, onHint = () => {} } = {}) {
+    if (draw) throw new Error('Already drawing a boundary');
+    const lease = claimPointer(POINTER_OWNER);
+    if (!lease)
+      throw new Error('Another tool is using the pointer. Close it first.');
+    let center = null;
+    let cursor = null;
+    const handler = new Cesium.ScreenSpaceEventHandler(scene.canvas);
+    const stock = viewer.screenSpaceEventHandler;
+    const savedClick = stock.getInputAction(
+      Cesium.ScreenSpaceEventType.LEFT_CLICK,
+    );
+    stock.removeInputAction(Cesium.ScreenSpaceEventType.LEFT_CLICK);
+    const radiusNow = () =>
+      radiusM ??
+      (center && cursor ? measureSegment(center, cursor).lengthM : 0);
+    const preview = viewer.entities.add({
+      polyline: {
+        positions: new Cesium.CallbackProperty(() => {
+          const r = radiusNow();
+          if (!center || r < 0.5) return [];
+          return Cesium.Cartesian3.fromDegreesArray(
+            circleRing(center, r).flat(),
+          );
+        }, false),
+        width: 3,
+        clampToGround: true,
+        material: new Cesium.PolylineDashMaterialProperty({
+          color: Cesium.Color.fromCssColorString(DRAW_CSS),
+        }),
+      },
+    });
+    const say = () => {
+      const r = radiusNow();
+      onHint(
+        !center
+          ? `Click the circle centre${radiusM ? ` (radius ${Math.round(radiusM)} m)` : ''}. Esc cancels.`
+          : `Radius ${r.toFixed(1)} m (${Math.round(r * FEET_PER_METRE)} ft). Click to set. Esc cancels.`,
+      );
+    };
+    let resolveDone;
+    const done = new Promise((resolve) => (resolveDone = resolve));
+    document.body.classList.add('site-boundary-drawing');
+    const cleanup = () => {
+      handler.destroy();
+      if (savedClick)
+        stock.setInputAction(
+          savedClick,
+          Cesium.ScreenSpaceEventType.LEFT_CLICK,
+        );
+      viewer.entities.remove(preview);
+      document.removeEventListener('keydown', onKey, true);
+      document.body.classList.remove('site-boundary-drawing');
+      releasePointer(lease);
+      draw = null;
+      governorRequestRender('site-boundary-draw');
+    };
+    const finish = async () => {
+      const r = radiusNow();
+      if (!center || r < 0.5) return onHint('Click the centre, then the edge.');
+      const c = center;
+      cleanup();
+      try {
+        resolveDone(await setCircle(c, r));
+      } catch (error) {
+        onHint(error.message);
+        resolveDone(null);
+      }
+    };
+    const cancel = () => {
+      cleanup();
+      onHint('Circle cancelled.');
+      resolveDone(null);
+    };
+    function onKey(event) {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        cancel();
+      } else if (event.key === 'Enter' && center) {
+        event.preventDefault();
+        void finish();
+      }
+    }
+    handler.setInputAction((e) => {
+      const p = pickLonLat(e.position);
+      if (!p) return;
+      if (!center) {
+        center = p;
+        if (radiusM) return void finish();
+        say();
+      } else {
+        cursor = p;
+        void finish();
+      }
+      governorRequestRender('site-boundary-draw');
+    }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+    handler.setInputAction((e) => {
+      cursor = pickLonLat(e.endPosition);
+      if (center) say();
+      governorRequestRender('site-boundary-draw');
+    }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+    document.addEventListener('keydown', onKey, true);
+    draw = { finish, cancel, done };
+    say();
     return done;
   }
 
@@ -495,8 +768,20 @@ export function createSiteBoundary(viewer) {
     },
     describe,
     requireSite,
+    pickLonLat,
     setSite,
     setPoints,
+    setCircle,
+    importText,
+    loadFile,
+    startCircle,
+    get snapDeg() {
+      return snapDeg;
+    },
+    set snapDeg(value) {
+      const n = Number(value);
+      snapDeg = Number.isFinite(n) && n >= 0 && n <= 90 ? n : 0;
+    },
     loadKml,
     loadPreset,
     toKml,
