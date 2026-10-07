@@ -1,9 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  BAND,
   VIEWSHED,
+  bandOutlines,
+  bandStats,
   computeViewshed,
+  computeViewshedBand,
+  downsampleHeights,
   parseHeightM,
+  parseHeightRange,
   rowRuns,
 } from './viewshedMath.js';
 
@@ -111,4 +117,76 @@ test('row runs and height parsing', () => {
   assert.equal(parseHeightM('30m'), 30);
   assert.equal(parseHeightM('tall'), null);
   assert.equal(parseHeightM('-3'), null);
+});
+
+test('band viewshed: matches the single-height result at each end', () => {
+  const n = 41;
+  const heights = new Float64Array(n * n);
+  for (let i = 0; i < heights.length; i++) {
+    const r = Math.floor(i / n);
+    const c = i % n;
+    heights[i] = 100 + 6 * Math.sin(c / 4) + 5 * Math.cos(r / 5);
+  }
+  const base = {
+    heights,
+    width: n,
+    height: n,
+    cellXM: 2,
+    cellYM: 2,
+    observer: { col: 20, row: 20 },
+  };
+  const band = computeViewshedBand({ ...base, lowM: 1, highM: 2.5 });
+  const lo = computeViewshed({ ...base, eyeM: 1 }).grid;
+  const hi = computeViewshed({ ...base, eyeM: 2.5 }).grid;
+  let highOnly = 0;
+  for (let i = 0; i < band.length; i++) {
+    assert.equal(band[i] === BAND.BOTH, lo[i] === VIEWSHED.VISIBLE, `low ${i}`);
+    assert.equal(
+      band[i] >= BAND.HIGH_ONLY,
+      hi[i] === VIEWSHED.VISIBLE,
+      `high ${i}`,
+    );
+    if (band[i] === BAND.HIGH_ONLY) highOnly++;
+  }
+  assert.ok(highOnly > 0, 'raising the eye reveals more ground');
+  const stats = bandStats(band, n, 2, 2, base.observer);
+  assert.ok(stats.highPct > stats.lowPct);
+  assert.equal(stats.judged, n * n);
+  // Outlines: the edge of the high-eye area exists and is in grid coords.
+  const lines = bandOutlines(band, n, n, 'high');
+  assert.ok(lines.length > 0);
+  for (const [x, y] of lines.flat())
+    assert.ok(x >= 0 && x <= n - 1 && y >= 0 && y <= n - 1);
+  // Row slices fill only their rows and agree with the whole.
+  const top = computeViewshedBand({
+    ...base,
+    lowM: 1,
+    highM: 2.5,
+    rows: [0, 10],
+  });
+  assert.deepEqual(top.slice(0, 10 * n), band.slice(0, 10 * n));
+  assert.ok(top.slice(10 * n).every((v) => v === 0));
+});
+
+test('height ranges and downsampling', () => {
+  assert.deepEqual(parseHeightRange('1-2.5 m'), { lowM: 1, highM: 2.5 });
+  assert.deepEqual(parseHeightRange('2.5 to 1'), { lowM: 1, highM: 2.5 });
+  assert.deepEqual(parseHeightRange('1.7'), { lowM: 1.7, highM: 1.7 });
+  const ft = parseHeightRange('3–8 ft');
+  assert.ok(
+    Math.abs(ft.lowM - 0.9144) < 1e-9 && Math.abs(ft.highM - 2.4384) < 1e-9,
+  );
+  assert.equal(parseHeightRange('a-b'), null);
+  assert.equal(parseHeightRange('1-2-3'), null);
+  const d = downsampleHeights(
+    Float32Array.from([1, 3, 5, 7, 2, 4, NaN, 8, 9]),
+    3,
+    3,
+    2,
+  );
+  assert.equal(d.width, 1);
+  assert.equal(d.height, 1);
+  assert.equal(d.values[0], 3.25); // the 2×2 block 1, 3, 7, 2
+  const gap = downsampleHeights(Float32Array.from([NaN, 2, 4, 6]), 2, 2, 2);
+  assert.equal(gap.values[0], 4); // NaN ignored
 });

@@ -390,3 +390,18 @@
 .site-tray-legend .lg-vs-hidden::before {
   background: #ff5252;
 }
+
+.site-tray-legend .lg-vs-high::before {
+  background: #ffc400;
+}
+
+.site-tray-legend .lg-vs-edge-hi::before,
+.site-tray-legend .lg-vs-edge-lo::before {
+  height: 0.2rem;
+  vertical-align: 2px;
+  background: #ffffff;
+}
+
+.site-tray-legend .lg-vs-edge-lo::before {
+  background: #00e5ff;
+}

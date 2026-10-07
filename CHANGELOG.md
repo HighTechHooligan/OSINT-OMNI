@@ -10,6 +10,16 @@
   events for common airliners, and Wikipedia articles that mention the tail
   number. Features Code `plane [callsign|tail|hex]`, `plane info`,
   `plane exit`. New server route `/api/aircraft/trivia`.
+- **Viewshed band and speed**: the eye height can be a band (default
+  1–2.5 m). Green is seen even from the low eye, amber only from the high
+  eye, red hidden; a white outline marks the high-eye edge and a cyan one
+  the low-eye edge. Sight lines run on the GPU (WebGL2 shader, identical
+  results to the CPU code) with a choice of dedicated GPU, integrated GPU
+  or CPU workers, so bare-earth grids now use the full 1 m 3DEP resolution
+  (up to a million cells). Heights load once per boundary, share the
+  contours' 3DEP cache, start loading while you pick the spot, and mesh
+  samples go four batches at a time. The status line shows how long heights
+  and sight lines took, and on which processor.
 - **Viewshed** (SITE → Viewshed, Features Code `viewshed`): place an
   observer inside the site boundary at an eye height (and optional target
   height) and the area they can see is shaded green, the rest red, with the
@@ -456,6 +466,7 @@
 Add feed provenance to analyst/view answers and HUD context while retaining existing response fields and runner ownership (Matt Van Horn, #347).
 
 Analyst records for loaded satellites, datacenters and dams, with explicit bounded count/rank coverage (Matt Van Horn, #351).
+
 - New Fire Perimeters layer (Events group): live NIFC WFIGS interagency
   wildfire incident perimeters as ground-clamped polygons with a
   containment-colored fire line, refreshed every 5 minutes from the public
@@ -731,7 +742,6 @@ This changelog records public product changes. For the authoritative description
 of current runtime behavior, see [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md).
 
 ### Other changes
-
 
 - Add ECMWF IFS model selection to Wind (#464, thanks @beneduzi), with model-scoped forecast-step caches, cancellation of replaced requests, and separate issue/valid timestamps.
 
@@ -1541,4 +1551,3 @@ represent previously published GitHub Releases.
 ## [0.1.0] — 2026-02-09
 
 - Initial project version.
-
