@@ -946,5 +946,13 @@
   "src/services/aircraftInfo.js",
   "src/services/aircraftInfo.test.mjs",
   "src/services/aircraftDossier.js",
-  "src/ui/aircraftPanel.js"
+  "src/ui/aircraftPanel.js",
+  "server/providers/airspace.js",
+  "src/app/layers/airspace.js",
+  "src/data/airspaceProxy.test.mjs",
+  "src/layers/airspace/index.js",
+  "src/layers/airspace/layer.test.mjs",
+  "src/layers/airspace/records.js",
+  "src/layers/airspace/records.test.mjs",
+  "src/layers/airspace/source.js"
 ]

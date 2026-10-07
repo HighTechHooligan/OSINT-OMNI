@@ -405,3 +405,62 @@ test('plane flies into the cockpit, opens details, and exits', async () => {
   assert.match(h.lines[2].text, /No aircraft matching "NOPE"/);
   assert.equal(h.lines[2].tone, 'err');
 });
+
+test('airspace toggles the layer, sets kinds and checks the boundary center', async () => {
+  let enabled = false;
+  const params = {
+    tfr: true,
+    class: true,
+    sua: true,
+    laanc: false,
+    volumes: false,
+  };
+  const set = [];
+  const checks = [];
+  const module = {
+    getParams: () => ({ ...params }),
+    setParams: (p) => Object.assign(params, p),
+    checkAt: async (lon, lat) => {
+      checks.push([lon, lat]);
+      return {
+        hits: [{ kind: 'laanc', ceilingFt: 200, airport: 'FCM' }],
+        notes: ['Class D at the surface — Part 107 needs LAANC'],
+        level: 'auth',
+      };
+    },
+  };
+  const dm = {
+    layers: new Map([['airspace', { module }]]),
+    isEffectivelyEnabled: () => enabled,
+    toggle: async () => {
+      enabled = !enabled;
+    },
+    setLayerParams: (id, p) => {
+      set.push([id, p]);
+      Object.assign(params, p);
+      return true;
+    },
+  };
+  const h = harness({
+    getDataManager: () => dm,
+    getViewCenter: () => ({ lon: -93.3, lat: 44.9 }),
+  });
+  await h.run('airspace on');
+  assert.equal(enabled, true);
+  await h.run('airspace laanc on');
+  await h.run('airspace 3d');
+  assert.deepEqual(set, [
+    ['airspace', { laanc: true }],
+    ['airspace', { volumes: true }],
+  ]);
+  await h.run('airspace check');
+  assert.deepEqual(checks, [[-93.3, 44.9]]);
+  assert.ok(
+    h.lines.some((l) => /LAANC grid · max 200 ft AGL \(FCM\)/.test(l.text)),
+  );
+  assert.ok(h.lines.some((l) => /Class D at the surface/.test(l.text)));
+  await h.run('airspace bogus');
+  assert.match(h.lines.at(-1).text, /Usage: airspace/);
+  await h.run('airspace off');
+  assert.equal(enabled, false);
+});
