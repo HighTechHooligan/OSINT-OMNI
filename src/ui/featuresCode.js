@@ -5,6 +5,7 @@
  * attached. The command table doubles as the tool surface a local agent can
  * call later; the `js` escape hatch is for the person at the keyboard only.
  */
+import { normalizeDatum } from '../services/contourMath.js';
 
 import { parseLength } from '../services/surveyGeometry.js';
 import { openCoordinatePaste } from './coordinatePaste.js';
@@ -23,7 +24,10 @@ Boundary
   site                     show what is loaded
 Contours (USGS 3DEP bare earth, inside the boundary)
   contours on | off        draw or hide contours
-  contour <ft>             set the interval, 2-100 ft (also: set contour <ft>)
+  contour <ft> [asl|rel]   set the interval, 2-100 ft (also: set contour <ft>)
+  elev asl | relative      label elevations above sea level (NAVD88) or
+                           relative: 0 ft = lowest point in the boundary
+                           (also: datum <mode>, set elev <mode>)
   contour align on | off   snap contours to the Google 3D mesh (measured per site)
   canopy on | off          shade tree/structure cover from the Google 3D mesh
 Buildings (only inside the site boundary)
@@ -44,6 +48,11 @@ Console
   cls                      clear this console
   js <expression>          run JavaScript (dev only; viewer, site in scope)
 Up/Down recalls history. Esc closes.`;
+
+const datumWords = (d) =>
+  d === 'relative'
+    ? 'relative (0 ft = lowest point in boundary)'
+    : 'above sea level (NAVD88)';
 
 /** Split a command line into a lower-cased name, its arguments and raw tail. */
 export function parseCommand(line) {
@@ -75,6 +84,19 @@ export function switchArg(value) {
 
 export const describeSite = (s) =>
   `${s.name} · ${s.areaAcres ?? '?'} ac · ${s.vertices} vertices · ${s.points} points`;
+
+/** Contour status line, in whichever elevation datum is active. */
+export function describeContours(state) {
+  const st = state.stats;
+  if (!st) return `Contours every ${state.intervalFt} ft`;
+  const datum =
+    st.datum === 'relative'
+      ? `ft relative (0 = ${st.baseFt} ft NAVD88, lowest in boundary)`
+      : 'ft NAVD88';
+  return `Contours every ${state.intervalFt} ft · ${st.lines} lines · ${st.minFt}–${st.maxFt} ${datum} · ${st.resM} m grid${st.cached ? ' (cached)' : ''}`;
+}
+
+const DATUM_USAGE = 'Usage: elev asl | relative';
 
 const LAYER_ALIASES = Object.freeze({
   osm: 'osm-streets',
@@ -112,29 +134,44 @@ export function createFeatureCommands({
     );
   }
 
-  async function contourSwitch(on) {
+  async function contourSwitch(on, options) {
     if (on === false) {
       contours.hideContours();
       return print('Contours hidden', 'ok');
     }
     const line = print('Loading USGS 3DEP elevation…', 'dim');
-    const state = await contours.showContours();
-    const st = state.stats;
-    line.textContent = st
-      ? `Contours every ${state.intervalFt} ft · ${st.lines} lines · ${st.minFt}–${st.maxFt} ft NAVD88 · ${st.resM} m grid${st.cached ? ' (cached)' : ''}`
-      : `Contours every ${state.intervalFt} ft`;
+    line.textContent = describeContours(await contours.showContours(options));
     line.className = 'fc-ok';
   }
 
-  async function setContour(value) {
+  async function setContour(value, datumArg) {
     const ft = Number(value);
-    if (!Number.isFinite(ft)) return print('Usage: contour <2-100 ft>', 'err');
+    if (!Number.isFinite(ft))
+      return print('Usage: contour <2-100 ft> [asl|relative]', 'err');
+    const datum =
+      datumArg === undefined ? undefined : normalizeDatum(datumArg, null);
+    if (datum === null) return print(DATUM_USAGE, 'err');
+    if (contours.describe().contoursOn)
+      return contourSwitch(true, { intervalFt: ft, datum });
+    if (datum) await contours.setDatum(datum);
     const state = await contours.setContourInterval(ft);
-    if (state.contoursOn) return contourSwitch(true);
     print(
-      `Contour interval set to ${state.intervalFt} ft (run "contours on" to draw)`,
+      `Contour interval set to ${state.intervalFt} ft, ${datumWords(state.datum)} (run "contours on" to draw)`,
       'ok',
     );
+  }
+
+  async function setDatum(value) {
+    if (value === undefined)
+      return print(
+        `Elevations: ${datumWords(contours.describe().datum)}. ${DATUM_USAGE}`,
+        'dim',
+      );
+    const datum = normalizeDatum(value, null);
+    if (!datum) return print(DATUM_USAGE, 'err');
+    if (contours.describe().contoursOn) return contourSwitch(true, { datum });
+    await contours.setDatum(datum);
+    print(`Elevations: ${datumWords(datum)} (run "contours on" to draw)`, 'ok');
   }
 
   const commands = {
@@ -228,11 +265,19 @@ export function createFeatureCommands({
       }
       const on = switchArg(value);
       if (on !== null) return contourSwitch(on);
-      return setContour(value);
+      return setContour(value, arg);
     },
-    set([name, value]) {
-      if (/^contours?$/i.test(name ?? '')) return setContour(value);
-      print('Usage: set contour <2-100 ft>', 'err');
+    elev([value]) {
+      return setDatum(value);
+    },
+    datum([value]) {
+      return setDatum(value);
+    },
+    set([name, value, datum]) {
+      if (/^contours?$/i.test(name ?? '')) return setContour(value, datum);
+      if (/^(elev|elevation|elevations|datum)$/i.test(name ?? ''))
+        return setDatum(value);
+      print('Usage: set contour <2-100 ft> | set elev asl|relative', 'err');
     },
     async canopy([value]) {
       const on = switchArg(value) ?? !contours.describe().canopyOn;

@@ -11,7 +11,13 @@ import {
   CONTOUR_MAX_FT,
   CONTOUR_MIN_FT,
   clampIntervalFt,
+  normalizeDatum,
 } from '../services/contourMath.js';
+
+const DATUM_LABEL = {
+  asl: 'ft above sea level (NAVD88)',
+  relative: 'ft relative',
+};
 
 const ACRES = (s) => (s?.areaAcres != null ? `${s.areaAcres} ac` : '');
 
@@ -97,6 +103,12 @@ export function mountSiteTray({
           <output for="st-interval" data-st="interval-out">10 ft</output>
         </div>
         <div class="site-tray-scale" aria-hidden="true"><span>${CONTOUR_MIN_FT} ft</span><span>${CONTOUR_MAX_FT} ft</span></div>
+        <label class="site-tray-select">Elevations
+          <select id="st-datum" data-st="datum">
+            <option value="asl" selected>Above sea level (NAVD88)</option>
+            <option value="relative">Relative (0 = lowest point in boundary)</option>
+          </select>
+        </label>
         <p class="site-tray-status" data-st="contour-status"></p>
         <label class="site-tray-switch">
           <input type="checkbox" id="st-canopy" data-st="canopy" />
@@ -199,14 +211,18 @@ export function mountSiteTray({
     $('canopy').checked = state.canopyOn;
     slider.value = String(state.intervalFt);
     $('interval-out').textContent = `${state.intervalFt} ft`;
+    $('datum').value = normalizeDatum(state.datum);
     const st = state.stats;
-    if (state.contoursOn && st)
+    if (state.contoursOn && st) {
+      const rel = st.datum === 'relative';
+      const base =
+        rel && st.baseFt != null ? ` · 0 = ${st.baseFt} ft NAVD88` : '';
       say(
         'contour-status',
-        `${st.lines} lines · ${st.minFt}–${st.maxFt} ft NAVD88 · ${st.resM} m grid${st.cached ? ' · cached' : ''}${alignNote(st)}`,
+        `${st.lines} lines · ${st.minFt}–${st.maxFt} ${DATUM_LABEL[st.datum] ?? 'ft'}${base} · ${st.resM} m grid${st.cached ? ' · cached' : ''}${alignNote(st)}`,
         'ok',
       );
-    else if (!state.contoursOn) say('contour-status', '');
+    } else if (!state.contoursOn) say('contour-status', '');
     if (state.canopyOn && state.canopy)
       say(
         'canopy-status',
@@ -348,6 +364,10 @@ export function mountSiteTray({
       250,
     );
   });
+  $('datum').addEventListener(
+    'change',
+    guard('contour-status', () => contours.setDatum($('datum').value)),
+  );
   $('canopy').addEventListener('change', async (event) => {
     const box = event.target;
     try {

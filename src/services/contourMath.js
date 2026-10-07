@@ -20,16 +20,42 @@ export function clampIntervalFt(value, fallback = 10) {
   return Math.min(CONTOUR_MAX_FT, Math.max(CONTOUR_MIN_FT, Math.round(n)));
 }
 
-/** Contour levels (metres) covering [minM, maxM] at an interval in feet. */
-export function contourLevels(minM, maxM, intervalFt) {
+export const DATUMS = Object.freeze(['asl', 'relative']);
+
+/**
+ * Elevation reference for contour labels.
+ * - 'asl': feet above sea level (NAVD88, as served by USGS 3DEP)
+ * - 'relative': 0 ft at the lowest point inside the boundary
+ */
+export function normalizeDatum(value, fallback = 'asl') {
+  const v = String(value ?? '')
+    .trim()
+    .toLowerCase();
+  if (
+    ['asl', 'msl', 'sea', 'sealevel', 'navd88', 'absolute', 'abs'].includes(v)
+  )
+    return 'asl';
+  if (['relative', 'rel', 'zero', 'local', 'agl', 'site'].includes(v))
+    return 'relative';
+  return fallback;
+}
+
+/**
+ * Contour levels covering [minM, maxM] at an interval in feet, counted from
+ * `baseM` (0 for sea level, the zone minimum for relative). `ft` is the
+ * label value relative to the base; `m` is the absolute level in metres.
+ */
+export function contourLevels(minM, maxM, intervalFt, baseM = 0) {
   const stepFt = clampIntervalFt(intervalFt);
-  const lo = Math.ceil((minM * FEET_PER_METRE) / stepFt) * stepFt;
-  const hi = Math.floor((maxM * FEET_PER_METRE) / stepFt) * stepFt;
+  const lo =
+    Math.ceil(((minM - baseM) * FEET_PER_METRE) / stepFt - 1e-9) * stepFt;
+  const hi =
+    Math.floor(((maxM - baseM) * FEET_PER_METRE) / stepFt + 1e-9) * stepFt;
   const levels = [];
   for (let ft = lo; ft <= hi + 1e-9; ft += stepFt) {
     levels.push({
-      ft: Math.round(ft * 100) / 100,
-      m: ft / FEET_PER_METRE,
+      ft: Math.round(ft * 100) / 100 + 0, // + 0 turns -0 into 0
+      m: baseM + ft / FEET_PER_METRE,
       index: Math.round(ft / stepFt) % INDEX_EVERY === 0,
     });
   }
@@ -67,12 +93,13 @@ export function smoothGrid(values, width, height) {
   return out;
 }
 
-/** Min/max of finite samples. */
-export function gridRange(values) {
+/** Min/max of finite samples (only where mask is set, when given). */
+export function gridRange(values, mask = null) {
   let min = Infinity;
   let max = -Infinity;
-  for (const v of values) {
-    if (!Number.isFinite(v)) continue;
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i];
+    if (!Number.isFinite(v) || (mask && !mask[i])) continue;
     if (v < min) min = v;
     if (v > max) max = v;
   }
@@ -270,19 +297,24 @@ export function simplifyLine(points, tolerance = 0.25) {
 
 /**
  * Full pipeline: levels → segments → polylines, in grid coordinates.
- * @returns {{ levels: Array, lines: Array<{ft:number, index:boolean, points:number[][]}>, range: {min:number,max:number}|null }}
+ * `datum` 'relative' counts levels from the lowest point inside the mask.
+ * @returns {{ levels: Array, lines: Array<{ft:number, m:number, index:boolean, points:number[][]}>,
+ *   range: {min:number,max:number}|null, baseM: number, datum: 'asl'|'relative' }}
  */
 export function buildContours(
   values,
   width,
   height,
   intervalFt,
-  { mask = null, smooth = true } = {},
+  { mask = null, smooth = true, datum = 'asl' } = {},
 ) {
+  const mode = normalizeDatum(datum);
   const grid = smooth ? smoothGrid(values, width, height) : values;
-  const range = gridRange(grid);
-  if (!range) return { levels: [], lines: [], range: null };
-  const levels = contourLevels(range.min, range.max, intervalFt);
+  const range = gridRange(grid, mask) ?? gridRange(grid);
+  if (!range)
+    return { levels: [], lines: [], range: null, baseM: 0, datum: mode };
+  const baseM = mode === 'relative' ? range.min : 0;
+  const levels = contourLevels(range.min, range.max, intervalFt, baseM);
   const segs = marchingSquares(grid, width, height, levels, mask);
   const lines = [];
   for (const [k, list] of segs) {
@@ -291,10 +323,40 @@ export function buildContours(
       if (simple.length >= 2)
         lines.push({
           ft: levels[k].ft,
+          m: levels[k].m,
           index: levels[k].index,
           points: simple,
         });
     }
   }
-  return { levels, lines, range };
+  return { levels, lines, range, baseM, datum: mode };
+}
+
+/** Label text for a contour level: "905 ft" (sea level) or "+40 ft" (relative). */
+export function formatElevationFt(ft, datum = 'asl') {
+  const n = Math.round(Number(ft) * 10) / 10;
+  if (normalizeDatum(datum) === 'relative')
+    return n > 0 ? `+${n} ft` : `${n} ft`;
+  return `${n} ft`;
+}
+
+/**
+ * Pick label anchors: one per line at its middle vertex, index contours
+ * first (longest first). When a site has fewer than 4 index lines, minor
+ * lines are labelled too so short relief still gets numbers. At most `max`.
+ * Returns {ft, m, point:[x,y]} in grid coordinates.
+ */
+export function pickLabelAnchors(lines, max = 60) {
+  const usable = lines.filter((line) => line.points.length >= 2);
+  const byLength = (a, b) => b.points.length - a.points.length;
+  const index = usable.filter((line) => line.index).sort(byLength);
+  const picked =
+    index.length >= 4
+      ? index
+      : [...index, ...usable.filter((line) => !line.index).sort(byLength)];
+  return picked.slice(0, Math.max(0, max)).map((line) => ({
+    ft: line.ft,
+    m: line.m,
+    point: line.points[Math.floor(line.points.length / 2)],
+  }));
 }
