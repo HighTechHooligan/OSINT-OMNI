@@ -344,3 +344,64 @@ export function downsampleHeights(values, width, height, factor) {
     }
   return { values: out, width: w, height: h, factor: f };
 }
+
+/**
+ * Surface heights from scattered points: the highest point in each cell of
+ * a north-up lon/lat grid (roofs and canopy win over the ground beside
+ * them). Cells no point hit are filled from their neighbours, up to
+ * `fillPasses` cells in from the nearest hit; farther gaps stay NaN.
+ * @param {ArrayLike<number>} points flat [lon, lat, height, lon, lat, …]
+ * @returns {{ values: Float64Array, hits: number }}
+ */
+export function surfaceGrid(
+  points,
+  bbox,
+  width,
+  height,
+  { fillPasses = 3 } = {},
+) {
+  const values = new Float64Array(width * height).fill(Number.NaN);
+  const sx = width / (bbox.maxLon - bbox.minLon);
+  const sy = height / (bbox.maxLat - bbox.minLat);
+  for (let k = 0; k + 2 < points.length; k += 3) {
+    const c = Math.floor((points[k] - bbox.minLon) * sx);
+    const r = Math.floor((bbox.maxLat - points[k + 1]) * sy);
+    const h = points[k + 2];
+    if (c < 0 || r < 0 || c >= width || r >= height || !Number.isFinite(h))
+      continue;
+    const i = r * width + c;
+    if (!(values[i] >= h)) values[i] = h;
+  }
+  let hits = 0;
+  for (const v of values) if (Number.isFinite(v)) hits++;
+  for (let pass = 0; pass < fillPasses; pass++) {
+    const next = values.slice();
+    let filled = 0;
+    for (let r = 0; r < height; r++)
+      for (let c = 0; c < width; c++) {
+        const i = r * width + c;
+        if (Number.isFinite(values[i])) continue;
+        let sum = 0;
+        let n = 0;
+        for (let y = Math.max(0, r - 1); y <= Math.min(height - 1, r + 1); y++)
+          for (
+            let x = Math.max(0, c - 1);
+            x <= Math.min(width - 1, c + 1);
+            x++
+          ) {
+            const v = values[y * width + x];
+            if (Number.isFinite(v)) {
+              sum += v;
+              n++;
+            }
+          }
+        if (n) {
+          next[i] = sum / n;
+          filled++;
+        }
+      }
+    values.set(next);
+    if (!filled) break;
+  }
+  return { values, hits };
+}

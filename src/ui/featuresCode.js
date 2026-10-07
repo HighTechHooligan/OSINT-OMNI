@@ -8,6 +8,7 @@
 import { normalizeDatum } from '../services/contourMath.js';
 
 import { parseLength } from '../services/surveyGeometry.js';
+import { dedicatedGpuAdvice } from '../services/viewshedGpu.js';
 import { parseHeightM, parseHeightRange } from '../services/viewshedMath.js';
 import { openCoordinatePaste } from './coordinatePaste.js';
 
@@ -44,6 +45,7 @@ Viewshed (only inside the site boundary)
   viewshed mesh | dem | auto  heights: 3D mesh (buildings + trees block),
                            USGS bare earth, or auto (mesh when it is on)
   viewshed gpu dedicated | integrated | cpu  which processor runs it
+  viewshed gpu             the GPU in use, and how to switch to the dedicated one
   viewshed off             clear the viewshed
 Camera
   zoom                     fly to the boundary
@@ -408,11 +410,20 @@ export function createFeatureCommands({
       }
       if (first === 'gpu') {
         const mode = rest[0];
-        if (!['dedicated', 'integrated', 'cpu'].includes(mode))
-          return print(
-            `Computing on: ${viewshed.describe().gpu}. Usage: viewshed gpu dedicated|integrated|cpu`,
+        if (!['dedicated', 'integrated', 'cpu'].includes(mode)) {
+          const d = viewshed.describe();
+          print(
+            `Computing on: ${d.gpu}${d.renderer ? ` (${d.renderer}, ${d.gpuKind})` : ''}. Usage: viewshed gpu dedicated|integrated|cpu`,
             'dim',
           );
+          const advice = dedicatedGpuAdvice(
+            d.gpuKind,
+            d.renderer,
+            globalThis.navigator?.userAgentData?.platform ||
+              globalThis.navigator?.platform,
+          );
+          return advice && print(advice, 'err');
+        }
         viewshed.setOptions({ gpu: mode });
         if (!viewshed.describe().observer)
           return print(`Viewshed will compute on: ${mode}`, 'ok');

@@ -97,3 +97,40 @@ test('GPU names are shortened for the status line', async () => {
   assert.equal(shortRendererName('Apple M2 Pro'), 'Apple M2 Pro');
   assert.equal(shortRendererName(''), 'WebGL2');
 });
+
+test('GPU names are classed so an integrated GPU can be flagged', async () => {
+  const { gpuClass } = await import('./viewshedGpu.js');
+  const cases = {
+    'NVIDIA GeForce RTX 4070 Laptop GPU': 'dedicated',
+    'AMD Radeon RX 7900 XTX': 'dedicated',
+    'Intel(R) Arc(TM) A770 Graphics': 'dedicated',
+    'Intel(R) Iris(R) Xe Graphics': 'integrated',
+    'Intel(R) UHD Graphics 620': 'integrated',
+    'AMD Radeon(TM) Graphics': 'integrated',
+    'AMD Radeon 780M Graphics': 'integrated',
+    'Apple M2 Pro': 'unified',
+    'SwiftShader Device (Subzero)': 'software',
+    'Microsoft Basic Render Driver': 'software',
+    WebGL2: 'unknown',
+  };
+  for (const [name, kind] of Object.entries(cases))
+    assert.equal(gpuClass(name), kind, name);
+});
+
+test('integrated or software GPUs get steps to reach the dedicated one', async () => {
+  const { dedicatedGpuAdvice } = await import('./viewshedGpu.js');
+  const win = dedicatedGpuAdvice('integrated', 'Intel(R) Iris(R) Xe', 'Win32');
+  assert.match(win, /Iris/);
+  assert.match(win, /Settings > System > Display > Graphics/);
+  assert.match(win, /High performance/);
+  assert.match(
+    dedicatedGpuAdvice('integrated', 'x', 'Linux x86_64'),
+    /DRI_PRIME/,
+  );
+  assert.match(
+    dedicatedGpuAdvice('software', 'SwiftShader', 'Win32'),
+    /acceleration/,
+  );
+  assert.equal(dedicatedGpuAdvice('dedicated', 'RTX 4070', 'Win32'), null);
+  assert.equal(dedicatedGpuAdvice('unified', 'Apple M2', 'MacIntel'), null);
+});

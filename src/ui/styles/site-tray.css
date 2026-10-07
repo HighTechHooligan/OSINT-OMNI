@@ -232,6 +232,18 @@
   flex: 0 0 auto;
 }
 
+.site-tray-warn {
+  display: block;
+  padding: 0.35rem 0.5rem;
+  border-left: 2px solid #ffc400;
+  background: rgba(255, 196, 0, 0.08);
+  color: var(--text-primary, inherit);
+}
+
+.site-tray-warn[hidden] {
+  display: none;
+}
+
 .site-tray-switch {
   display: flex;
   align-items: center;

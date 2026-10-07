@@ -87,6 +87,48 @@ export function shortRendererName(raw) {
 }
 
 /**
+ * What kind of GPU a renderer name is: 'dedicated', 'integrated',
+ * 'unified' (Apple silicon), 'software' (no GPU at all) or 'unknown'. Laptops with two GPUs report the
+ * integrated one when the OS hands the browser the power-saving GPU.
+ */
+export function gpuClass(name) {
+  const n = String(name || '');
+  if (/swiftshader|llvmpipe|softpipe|basic render|software/i.test(n))
+    return 'software';
+  if (/apple m\d|apple gpu/i.test(n)) return 'unified'; // one GPU, nothing to pick
+  if (/\barc\b/i.test(n)) return 'dedicated'; // Intel Arc cards
+  if (
+    /intel|iris|uhd|\bhd graphics|radeon\(tm\) graphics|radeon graphics|vega \d+ graphics|radeon \d{3}m\b|mali|adreno|powervr/i.test(
+      n,
+    )
+  )
+    return 'integrated';
+  if (/nvidia|geforce|quadro|rtx|gtx|radeon|firepro/i.test(n))
+    return 'dedicated';
+  return 'unknown';
+}
+
+/**
+ * What to tell the user when the viewshed did not get the dedicated GPU.
+ * A page can only ask for one (powerPreference); the OS decides which GPU
+ * the whole browser runs on, so the fix is an OS setting and a restart.
+ * @returns {string|null} null when there is nothing to fix
+ */
+export function dedicatedGpuAdvice(kind, renderer, platform = '') {
+  if (kind === 'software')
+    return `The browser has no GPU access (${renderer}), so sight lines run in software. Turn on "Use graphics acceleration when available" in the browser settings and restart it.`;
+  if (kind !== 'integrated') return null;
+  const lead = `Running on the integrated GPU (${renderer}). The browser picks one GPU for every page, and the operating system decides which.`;
+  if (/win/i.test(platform))
+    return `${lead} On Windows: Settings > System > Display > Graphics, find your browser (or "Add desktop app" and pick chrome.exe / msedge.exe / firefox.exe), Options > High performance > Save, then close every browser window and reopen it. NVIDIA Control Panel > Manage 3D settings > Program Settings does the same.`;
+  if (/mac/i.test(platform))
+    return `${lead} On a Mac with two GPUs: System Settings > Battery > Options, turn off automatic graphics switching, then restart the browser.`;
+  if (/linux/i.test(platform))
+    return `${lead} On Linux: start the browser with DRI_PRIME=1 (AMD/Intel) or prime-run (NVIDIA).`;
+  return `${lead} Set the browser to High performance in your system's graphics settings, then restart it.`;
+}
+
+/**
  * @param {{ powerPreference?: 'high-performance'|'low-power'|'default' }} [options]
  *   'high-performance' asks the browser for the dedicated GPU on machines
  *   with two; 'low-power' asks for the integrated one. The browser and OS

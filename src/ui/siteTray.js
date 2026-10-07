@@ -8,6 +8,7 @@
  */
 import { openCoordinatePaste } from './coordinatePaste.js';
 import { parseLength, SNAP_STEPS_DEG } from '../services/surveyGeometry.js';
+import { dedicatedGpuAdvice } from '../services/viewshedGpu.js';
 import { parseHeightM, parseHeightRange } from '../services/viewshedMath.js';
 import {
   CONTOUR_MAX_FT,
@@ -172,6 +173,7 @@ export function mountSiteTray({
           <button type="button" data-st="vs-clear" disabled>Clear</button>
         </div>
         <p class="site-tray-status" data-st="vs-status"></p>
+        <p class="site-tray-note site-tray-warn" data-st="vs-gpu-warn" role="note" hidden></p>
         <p class="site-tray-legend" aria-hidden="true">
           <span class="lg-vs-seen">seen from low eye</span><span class="lg-vs-high">only from high eye</span><span class="lg-vs-hidden">hidden</span><span class="lg-vs-edge-hi">high-eye edge</span><span class="lg-vs-edge-lo">low-eye edge</span>
         </p>
@@ -467,6 +469,16 @@ export function mountSiteTray({
     if (document.activeElement !== $('vs-source'))
       $('vs-source').value = state.source;
     if (state.gpu) $('vs-gpu').value = state.gpu;
+    const advice =
+      state.gpu === 'dedicated' || state.gpuKind === 'software'
+        ? dedicatedGpuAdvice(
+            state.gpuKind,
+            state.renderer,
+            navigator.userAgentData?.platform || navigator.platform,
+          )
+        : null;
+    $('vs-gpu-warn').hidden = !advice;
+    $('vs-gpu-warn').textContent = advice ?? '';
     if (state.picking)
       return say(
         'vs-status',

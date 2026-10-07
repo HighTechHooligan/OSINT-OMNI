@@ -29,6 +29,7 @@ import {
   haversineMeters,
   pointInRing,
 } from './siteGeometry.js';
+import { captureMeshHeights, meshSnapshotSupported } from './meshSnapshot.js';
 import { createViewshedEngine } from './viewshedEngine.js';
 import {
   BAND,
@@ -45,9 +46,11 @@ export const SITE_VIEWSHED_DEFAULTS = Object.freeze({
   highM: 2.5,
   source: 'auto',
   gpu: 'dedicated',
-  meshMaxCells: 40_000,
+  meshMaxCells: 250_000, // one top-down depth snapshot
+  meshSampleMaxCells: 40_000, // point-by-point fallback
+  meshTimeoutMs: 15_000,
   terrainMaxCells: 40_000,
-  sampleBatch: 1000,
+  sampleBatch: 250,
   sampleConcurrency: 4,
 });
 
@@ -143,12 +146,16 @@ export function createSiteViewshed(
     };
   }
 
-  /** Mesh heights, several batches in flight at once. */
+  /**
+   * Mesh heights point by point (fallback where depth snapshots are not
+   * available): small batches, several in flight, progress from the start.
+   */
   async function sampleMesh(grid) {
     const B = SITE_VIEWSHED_DEFAULTS.sampleBatch;
     const n = grid.width * grid.height;
     let next = 0;
     let done = 0;
+    say('Sampling the 3D mesh point by point… 0%');
     const lane = async () => {
       while (next < n) {
         const s = next;
@@ -193,6 +200,31 @@ export function createSiteViewshed(
     );
     out.forEach((c, i) => (grid.values[i] = c?.height ?? Number.NaN));
     return grid;
+  }
+
+  /**
+   * Mesh heights from one top-down depth snapshot (seconds), or point
+   * sampling where the snapshot is not supported.
+   */
+  async function loadMesh(area, budget) {
+    if (meshSnapshotSupported(scene)) {
+      const pixels = scene.drawingBufferWidth * scene.drawingBufferHeight;
+      const cells = Math.min(
+        budget,
+        SITE_VIEWSHED_DEFAULTS.meshMaxCells,
+        Math.max(10_000, Math.floor(pixels / 6)),
+      );
+      return captureMeshHeights(viewer, lonLatGrid(area.bbox, cells), {
+        say,
+        timeoutMs: SITE_VIEWSHED_DEFAULTS.meshTimeoutMs,
+      });
+    }
+    return sampleMesh(
+      lonLatGrid(
+        area.bbox,
+        Math.min(budget, SITE_VIEWSHED_DEFAULTS.meshSampleMaxCells),
+      ),
+    );
   }
 
   /** 3DEP at the contours' resolution: a cache hit when contours ran. */
@@ -259,12 +291,7 @@ export function createSiteViewshed(
         if (kind === 'mesh') {
           if (!hasPhotorealTiles())
             throw new Error('needs the Google 3D map source');
-          grid = await sampleMesh(
-            lonLatGrid(
-              area.bbox,
-              Math.min(budget, SITE_VIEWSHED_DEFAULTS.meshMaxCells),
-            ),
-          );
+          grid = await loadMesh(area, budget);
         } else if (kind === 'dem') {
           say('Loading USGS 3DEP elevation…');
           grid = fitToBudget(await loadDem(area), budget);
@@ -583,8 +610,12 @@ export function createSiteViewshed(
     state.picking = true;
     state.error = null;
     applyOptions(options);
-    // Start loading heights now, while the user picks the spot.
-    loadGrid(requireArea(), state.source).catch(() => {});
+    // Start loading heights now, while the user picks the spot; not the
+    // mesh, whose snapshot moves the camera.
+    const meshFirst =
+      state.source === 'mesh' ||
+      (state.source === 'auto' && hasPhotorealTiles());
+    if (!meshFirst) loadGrid(requireArea(), state.source).catch(() => {});
     emit();
     return new Promise((resolve, reject) => {
       handler = new Cesium.ScreenSpaceEventHandler(scene.canvas);
@@ -655,8 +686,11 @@ export function createSiteViewshed(
       targetM: state.targetM,
       source: state.source,
       gpu: state.gpu,
-      engine: engine ? engine.kind : null,
-      renderer: engine?.renderer ?? null,
+      // The engine (a tiny WebGL context) is made on first look, so the
+      // tray can flag an integrated GPU before anything is computed.
+      engine: getEngine().kind,
+      renderer: getEngine().renderer,
+      gpuKind: getEngine().gpuKind,
       observer: state.observer ? [...state.observer] : null,
       result: state.result ? { ...state.result } : null,
     };

@@ -8,7 +8,7 @@
  * All three return the same BAND codes.
  */
 import { computeViewshedBand } from './viewshedMath.js';
-import { createGpuViewshed } from './viewshedGpu.js';
+import { createGpuViewshed, gpuClass } from './viewshedGpu.js';
 
 /** Grid budgets: how many cells each engine handles comfortably in < 1 s. */
 export const ENGINE_MAX_CELLS = Object.freeze({
@@ -138,6 +138,11 @@ export function createViewshedEngine({
     /** GPU name in use, or null on the CPU. */
     get renderer() {
       return getGpu()?.renderer ?? null;
+    },
+    /** gpuClass() of the GPU in use, or null on the CPU. */
+    get gpuKind() {
+      const g = getGpu();
+      return g ? gpuClass(g.renderer) : null;
     },
     /** 'dedicated' | 'integrated' | 'cpu': drops the old context and retries. */
     setMode(next) {
