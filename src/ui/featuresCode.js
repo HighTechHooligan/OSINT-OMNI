@@ -21,6 +21,7 @@ Contours (USGS 3DEP bare earth, inside the boundary)
   elev asl | relative      label elevations above sea level (NAVD88) or
                            relative: 0 ft = lowest point in the boundary
                            (also: datum <mode>, set elev <mode>)
+  contour align on | off   snap contours to the Google 3D mesh (measured per site)
   canopy on | off          shade tree/structure cover from the Google 3D mesh
 Camera
   zoom                     fly to the boundary
@@ -236,10 +237,20 @@ export function createFeatureCommands({
     contours([value]) {
       return contourSwitch(switchArg(value) ?? !contours.describe().contoursOn);
     },
-    contour([value, datum]) {
+    async contour([value, arg]) {
+      if (/^align$/i.test(value ?? '')) {
+        const on = switchArg(arg) ?? !contours.describe().autoAlign;
+        await contours.setAutoAlign(on);
+        return print(
+          on
+            ? 'Contour mesh alignment on (needs the Google 3D map source)'
+            : 'Contour mesh alignment off',
+          'ok',
+        );
+      }
       const on = switchArg(value);
       if (on !== null) return contourSwitch(on);
-      return setContour(value, datum);
+      return setContour(value, arg);
     },
     elev([value]) {
       return setDatum(value);

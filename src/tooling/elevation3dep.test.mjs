@@ -11,6 +11,7 @@ import {
   elevation3depProxy,
   parseBbox,
   planGrid,
+  tiffExtent,
 } from '../../server/providers/elevation3dep.js';
 
 /** Minimal uncompressed single-strip little-endian Float32 GeoTIFF. */
@@ -131,6 +132,31 @@ test('decodeElevationTiff keeps elevations and masks no-data', async () => {
   );
 });
 
+test("tiffExtent reads the raster's own georeferencing", () => {
+  const image = (rasterType, origin = [-93.27, 44.978]) => ({
+    getOrigin: () => [...origin, 0],
+    getResolution: () => [0.0001, -0.0001, 0],
+    getWidth: () => 100,
+    getHeight: () => 80,
+    geoKeys: { GTRasterTypeGeoKey: rasterType },
+  });
+  const close = (a, b) =>
+    a.forEach((v, i) => assert.ok(Math.abs(v - b[i]) < 1e-9, `${a} vs ${b}`));
+  // PixelIsArea: tie point is the outer NW corner.
+  close(tiffExtent(image(1)), [-93.27, 44.97, -93.26, 44.978]);
+  // PixelIsPoint: tie point is the NW pixel centre, half a pixel inside.
+  close(tiffExtent(image(2)), [-93.27005, 44.97005, -93.26005, 44.97805]);
+  assert.equal(tiffExtent(image(1, [500000, 4980000])), null);
+  assert.equal(
+    tiffExtent({
+      getOrigin: () => {
+        throw new Error('no transform');
+      },
+    }),
+    null,
+  );
+});
+
 test('proxy serves the grid, caches it, and reports errors', async (t) => {
   const cacheDir = await mkdtemp(path.join(os.tmpdir(), 'dep-'));
   t.after(() => rm(cacheDir, { recursive: true, force: true }));
@@ -168,6 +194,9 @@ test('proxy serves the grid, caches it, and reports errors', async (t) => {
     w * h,
   );
   assert.ok(Math.abs(grid[0] - 250) < 1e-3);
+  // No georeferencing in the test TIFF → falls back to the requested box.
+  assert.equal(first.headers['X-Grid-Bbox'], bbox);
+  assert.equal(first.headers['X-Grid-Datum'], 'NAD83');
 
   const second = await request(`/?bbox=${bbox}&res=4`);
   assert.equal(second.headers['X-Cache'], 'HIT');

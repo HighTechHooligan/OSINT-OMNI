@@ -9,7 +9,14 @@ import { promises as fsp } from 'node:fs';
  *
  * Responds with the raw grid as little-endian Float32 (row 0 = north edge),
  * metres above NAVD88, and describes it in headers:
- *   X-Grid-Width, X-Grid-Height, X-Grid-Bbox, X-Grid-NoData, X-Grid-Source.
+ *   X-Grid-Width, X-Grid-Height, X-Grid-Bbox, X-Grid-NoData, X-Grid-Source,
+ *   X-Grid-Datum.
+ *
+ * X-Grid-Bbox is the outer pixel-edge extent the GeoTIFF itself declares
+ * (ArcGIS may snap the requested box), not the box we asked for, so the
+ * client places every sample where USGS put it. Horizontal coordinates are
+ * NAD83: the service republishes NAD83 source DEMs without a datum shift,
+ * which the client corrects to WGS84 (see src/services/datum.js).
  *
  * Grids are cached to `.gev-cache/3dep/` so a surveyed site keeps working
  * offline once it has been loaded once. Requests are capped by area so a
@@ -20,6 +27,9 @@ export const DEP_UPSTREAM =
 export const DEP_MAX_SIDE_PX = 2048;
 export const DEP_MAX_AREA_KM2 = 25;
 export const DEP_NODATA = -9999;
+export const DEP_HORIZONTAL_DATUM = 'NAD83';
+// Bump when the cached meta's meaning changes so stale grids are refetched.
+const CACHE_VERSION = 'v2';
 const M_PER_DEG_LAT = 111_320;
 
 /** Parse and validate "minLon,minLat,maxLon,maxLat". */
@@ -73,8 +83,40 @@ export function buildUpstreamUrl(bbox, { width, height }) {
 }
 
 /**
+ * Outer pixel-edge extent [minLon, minLat, maxLon, maxLat] declared by the
+ * GeoTIFF, or null when it carries no usable georeferencing. PixelIsPoint
+ * rasters tie the first pixel's centre, so step back half a pixel.
+ */
+export function tiffExtent(image) {
+  try {
+    const [ox, oy] = image.getOrigin();
+    const [rx, ry] = image.getResolution();
+    if (![ox, oy, rx, ry].every(Number.isFinite) || !rx || !ry) return null;
+    // GTRasterTypeGeoKey: 1 = PixelIsArea (the default), 2 = PixelIsPoint.
+    const half = image.geoKeys?.GTRasterTypeGeoKey === 2 ? 0.5 : 0;
+    const x0 = ox - half * rx;
+    const y0 = oy - half * ry;
+    const x1 = x0 + rx * image.getWidth();
+    const y1 = y0 + ry * image.getHeight();
+    const extent = [
+      Math.min(x0, x1),
+      Math.min(y0, y1),
+      Math.max(x0, x1),
+      Math.max(y0, y1),
+    ];
+    // Only trust lon/lat-looking numbers (imageSR=4326).
+    if (Math.abs(extent[0]) > 180 || Math.abs(extent[2]) > 180) return null;
+    if (Math.abs(extent[1]) > 90 || Math.abs(extent[3]) > 90) return null;
+    return extent;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Decode a single-band GeoTIFF into a Float32Array of the requested size.
- * Non-finite and no-data samples become DEP_NODATA.
+ * Non-finite and no-data samples become DEP_NODATA. `extent` is the raster's
+ * own georeferenced extent (null if the file has none).
  */
 export async function decodeElevationTiff(buffer, { width, height }) {
   const { fromArrayBuffer } = await import('geotiff');
@@ -107,14 +149,18 @@ export async function decodeElevationTiff(buffer, { width, height }) {
     out[i] = missing ? DEP_NODATA : v;
     if (!missing) valid++;
   }
-  return { values: out, validFraction: valid / out.length };
+  return {
+    values: out,
+    validFraction: valid / out.length,
+    extent: tiffExtent(image),
+  };
 }
 
 /** Stable cache key for a planned request. */
 export function gridCacheKey(bbox, grid) {
   return createHash('sha1')
     .update(
-      `${bbox.minLon.toFixed(6)},${bbox.minLat.toFixed(6)},${bbox.maxLon.toFixed(6)},${bbox.maxLat.toFixed(6)}:${grid.width}x${grid.height}`,
+      `${CACHE_VERSION}:${bbox.minLon.toFixed(6)},${bbox.minLat.toFixed(6)},${bbox.maxLon.toFixed(6)},${bbox.maxLat.toFixed(6)}:${grid.width}x${grid.height}`,
     )
     .digest('hex');
 }
@@ -162,14 +208,21 @@ export function elevation3depProxy({
     const type = response.headers.get('content-type') || '';
     if (/json|html|text/i.test(type))
       throw new Error('3DEP upstream returned an error page');
-    const { values, validFraction } = await decodeElevationTiff(
+    const { values, validFraction, extent } = await decodeElevationTiff(
       await response.arrayBuffer(),
       grid,
     );
+    const requested = [bbox.minLon, bbox.minLat, bbox.maxLon, bbox.maxLat];
+    if (extent && extent.some((v, i) => Math.abs(v - requested[i]) > 1e-7))
+      console.info('[3dep-proxy] upstream extent differs from request', {
+        requested,
+        extent,
+      });
     const meta = {
       width: grid.width,
       height: grid.height,
-      bbox: [bbox.minLon, bbox.minLat, bbox.maxLon, bbox.maxLat],
+      bbox: extent || requested,
+      datum: DEP_HORIZONTAL_DATUM,
       resM: grid.resM,
       validFraction,
       fetchedAt: new Date().toISOString(),
@@ -220,6 +273,7 @@ export function elevation3depProxy({
           'X-Grid-Res-M': String(entry.meta.resM),
           'X-Grid-Valid': String(entry.meta.validFraction),
           'X-Grid-Source': 'USGS 3DEP (bare earth, NAVD88 m)',
+          'X-Grid-Datum': entry.meta.datum || DEP_HORIZONTAL_DATUM,
           'X-Cache': cacheState,
         });
         res.end(entry.body);

@@ -6,6 +6,10 @@
  * clamped polylines that drape over terrain and Google 3D Tiles. Every 5th
  * line is a heavier index contour.
  *
+ * Placement: 3DEP lon/lats are NAD83, so every sample is shifted onto WGS84
+ * (datum.js). With the Google 3D mesh on, the remaining offset between the
+ * DEM and the mesh is measured at the site (meshAlign.js) and applied too.
+ *
  * Canopy: where the Google photorealistic mesh stands well above the 3DEP
  * ground (trees, structures), the cell is shaded green so you can see which
  * contours run under cover. Requires the photoreal map source.
@@ -20,6 +24,8 @@ import {
   normalizeDatum,
   pickLabelAnchors,
 } from './contourMath.js';
+import { nad83ShiftAt } from './datum.js';
+import { estimateMeshOffset } from './meshAlign.js';
 import { projectToWindow } from './siteBoundary.js';
 import { FEET_PER_METRE, boundaryAreaM2, pointInRing } from './siteGeometry.js';
 
@@ -28,7 +34,11 @@ export const CONTOUR_DEFAULTS = Object.freeze({
   datum: 'asl',
   canopyThresholdM: 2.5,
   canopyCellM: 4,
+  autoAlign: true,
+  alignSamples: 1500,
 });
+
+const M_PER_DEG_LAT = 111_320;
 
 const INDEX_CSS = '#FFD27A';
 const MINOR_CSS = '#FFF3D6';
@@ -71,6 +81,7 @@ export async function fetchElevationGrid(
   )
     .split(',')
     .map(Number);
+  const datum = response.headers.get('X-Grid-Datum') || 'NAD83';
   const raw = new Float32Array(await response.arrayBuffer());
   if (!width || !height || raw.length !== width * height)
     throw new Error('elevation grid was malformed');
@@ -82,16 +93,55 @@ export async function fetchElevationGrid(
     height,
     values,
     bbox: { minLon, minLat, maxLon, maxLat },
+    datum,
     cached: response.headers.get('X-Cache') === 'HIT',
   };
 }
 
-/** Grid (col,row) → lon/lat. Samples are pixel centres across the bbox. */
+/**
+ * Datum shift (degrees) for a grid: NAD83 → WGS84 at the grid centre, or
+ * zero for grids already in WGS84.
+ */
+export function gridDatumShift(grid, epoch) {
+  if (grid.datum && !/^NAD83/i.test(grid.datum))
+    return { dLon: 0, dLat: 0, eastM: 0, northM: 0 };
+  const lon = (grid.bbox.minLon + grid.bbox.maxLon) / 2;
+  const lat = (grid.bbox.minLat + grid.bbox.maxLat) / 2;
+  return nad83ShiftAt(lon, lat, epoch);
+}
+
+/** Metres per grid column (east) and row (south) at the grid centre. */
+export function gridPixelMetres(grid) {
+  const { bbox, width, height } = grid;
+  const midLat = ((bbox.minLat + bbox.maxLat) / 2) * (Math.PI / 180);
+  return {
+    pxEastM:
+      ((bbox.maxLon - bbox.minLon) / width) * M_PER_DEG_LAT * Math.cos(midLat),
+    pxSouthM: ((bbox.maxLat - bbox.minLat) / height) * M_PER_DEG_LAT,
+  };
+}
+
+/**
+ * Grid (col,row) → WGS84 lon/lat. Samples are pixel centres across the
+ * bbox, moved by the grid's datum shift and any measured mesh alignment
+ * (`grid.shift` / `grid.align`, both optional).
+ */
 export function gridToLonLat(grid, x, y) {
   const { bbox, width, height } = grid;
   const dx = (bbox.maxLon - bbox.minLon) / width;
   const dy = (bbox.maxLat - bbox.minLat) / height;
-  return [bbox.minLon + (x + 0.5) * dx, bbox.maxLat - (y + 0.5) * dy];
+  let lon = bbox.minLon + (x + 0.5) * dx;
+  let lat = bbox.maxLat - (y + 0.5) * dy;
+  if (grid.shift) {
+    lon += grid.shift.dLon;
+    lat += grid.shift.dLat;
+  }
+  if (grid.align?.ok) {
+    const midLat = ((bbox.minLat + bbox.maxLat) / 2) * (Math.PI / 180);
+    lon += grid.align.eastM / (M_PER_DEG_LAT * Math.cos(midLat));
+    lat += grid.align.northM / M_PER_DEG_LAT;
+  }
+  return [lon, lat];
 }
 
 /** 1 for samples inside the boundary ring, else 0. */
@@ -105,7 +155,10 @@ export function boundaryMask(grid, ring) {
   return mask;
 }
 
-export function createSiteContours(viewer, { boundary, fetchImpl } = {}) {
+export function createSiteContours(
+  viewer,
+  { boundary, fetchImpl, autoAlign = CONTOUR_DEFAULTS.autoAlign } = {},
+) {
   if (!viewer?.scene)
     throw new TypeError('Site contours require a Cesium viewer');
   if (!boundary) throw new TypeError('Site contours require a site boundary');
@@ -119,6 +172,7 @@ export function createSiteContours(viewer, { boundary, fetchImpl } = {}) {
     gridKey: '',
     stats: null,
     canopyStats: null,
+    autoAlign,
   };
   let contourPrimitives = [];
   let canopyPrimitive = null;
@@ -149,6 +203,7 @@ export function createSiteContours(viewer, { boundary, fetchImpl } = {}) {
       const [lon, lat] = gridToLonLat(grid, x, y);
       return Cesium.Cartesian3.fromDegrees(lon, lat, m + geoidHeight(lat, lon));
     });
+    removeLabels(); // an earlier draw may have finished in between
     labelLayer = document.createElement('div');
     labelLayer.className = 'site-orbit-labels site-contour-labels';
     labelLayer.setAttribute('aria-hidden', 'true');
@@ -185,6 +240,8 @@ export function createSiteContours(viewer, { boundary, fetchImpl } = {}) {
       fetchImpl,
     });
     grid.resM = res;
+    grid.shift = gridDatumShift(grid);
+    grid.align = null;
     grid.mask = boundaryMask(grid, site.boundary);
     state.grid = grid;
     state.gridKey = key;
@@ -211,16 +268,64 @@ export function createSiteContours(viewer, { boundary, fetchImpl } = {}) {
     return instances;
   }
 
-  /** Draw (or redraw) contours at the current interval. */
-  async function showContours({ intervalFt, datum } = {}) {
-    if (intervalFt !== undefined)
-      state.intervalFt = clampIntervalFt(intervalFt);
-    if (datum !== undefined) state.datum = normalizeDatum(datum, state.datum);
-    const site = boundary.requireSite();
-    const id = ++run;
-    state.contoursOn = true;
-    const grid = await loadGrid(site);
-    if (id !== run) return describe();
+  /**
+   * Measure the DEM↔mesh offset once per grid by sampling the Google mesh
+   * inside the boundary. Never throws; a failed or unclear measurement
+   * leaves grid.align.ok false and contours stay at the datum-corrected
+   * position.
+   */
+  function measureAlignment(grid) {
+    if (!grid.alignPromise && hasPhotorealTiles())
+      grid.alignPromise = sampleAlignment(grid);
+    return grid.alignPromise ?? Promise.resolve(null);
+  }
+
+  async function sampleAlignment(grid) {
+    grid.align = { ok: false, pending: true, eastM: 0, northM: 0 };
+    const inside = [];
+    for (let i = 0; i < grid.mask.length; i++)
+      if (grid.mask[i] && Number.isFinite(grid.values[i])) inside.push(i);
+    const stride = Math.max(
+      1,
+      Math.floor(inside.length / CONTOUR_DEFAULTS.alignSamples),
+    );
+    const points = [];
+    for (let k = 0; k < inside.length; k += stride) {
+      const i = inside[k];
+      points.push({ x: i % grid.width, y: Math.floor(i / grid.width) });
+    }
+    const cartos = points.map(({ x, y }) => {
+      const [lon, lat] = gridToLonLat(grid, x, y);
+      return Cesium.Cartographic.fromDegrees(lon, lat);
+    });
+    let result;
+    try {
+      const sampled = await scene.sampleHeightMostDetailed(cartos);
+      const samples = points.map((p, j) => ({
+        ...p,
+        h: sampled[j]?.height ?? Number.NaN,
+      }));
+      result = estimateMeshOffset(
+        { ...gridPixelMetres(grid), ...grid },
+        samples,
+      );
+    } catch (error) {
+      result = {
+        ok: false,
+        eastM: 0,
+        northM: 0,
+        reason: error?.message || 'mesh sampling failed',
+      };
+    }
+    if (!state.autoAlign) {
+      grid.align = null;
+      return null;
+    }
+    grid.align = result;
+    return result;
+  }
+
+  async function drawContours(grid, id) {
     const result = buildContours(
       grid.values,
       grid.width,
@@ -261,6 +366,19 @@ export function createSiteContours(viewer, { boundary, fetchImpl } = {}) {
         : null,
       resM: grid.resM,
       cached: grid.cached,
+      datumShiftM: grid.shift
+        ? Math.round(Math.hypot(grid.shift.eastM, grid.shift.northM) * 10) / 10
+        : 0,
+      align: grid.align?.pending
+        ? { pending: true }
+        : grid.align
+          ? {
+              ok: grid.align.ok,
+              eastM: grid.align.eastM,
+              northM: grid.align.northM,
+              reason: grid.align.reason,
+            }
+          : null,
     };
     try {
       await drawLabels(grid, result.lines, result.datum);
@@ -272,6 +390,43 @@ export function createSiteContours(viewer, { boundary, fetchImpl } = {}) {
       return describe();
     }
     governorRequestRender('site-contours');
+    emit();
+  }
+
+  /** Draw (or redraw) contours at the current interval. */
+  async function showContours({ intervalFt, datum } = {}) {
+    if (intervalFt !== undefined)
+      state.intervalFt = clampIntervalFt(intervalFt);
+    if (datum !== undefined) state.datum = normalizeDatum(datum, state.datum);
+    const site = boundary.requireSite();
+    const id = ++run;
+    state.contoursOn = true;
+    const grid = await loadGrid(site);
+    if (id !== run) return describe();
+    // Draw first, then refine: the user sees contours immediately and they
+    // settle onto the mesh once it has been sampled.
+    const settled = grid.align && !grid.align.pending;
+    const aligning =
+      state.autoAlign && !settled ? measureAlignment(grid) : null;
+    await drawContours(grid, id);
+    aligning?.then((align) => {
+      if (!align || id !== run || state.grid !== grid || !state.contoursOn)
+        return;
+      drawContours(grid, id).catch((error) =>
+        console.warn('[site-contours]', error?.message || error),
+      );
+    });
+    return describe();
+  }
+
+  /** Turn mesh alignment on/off (it is measured per site, never hand-set). */
+  async function setAutoAlign(on) {
+    state.autoAlign = Boolean(on);
+    if (state.grid && !state.autoAlign) {
+      state.grid.align = null;
+      state.grid.alignPromise = null;
+    }
+    if (state.contoursOn) return showContours();
     emit();
     return describe();
   }
@@ -447,6 +602,7 @@ export function createSiteContours(viewer, { boundary, fetchImpl } = {}) {
       canopyOn: state.canopyOn,
       stats: state.stats,
       canopy: state.canopyStats,
+      autoAlign: state.autoAlign,
     };
   }
 
@@ -474,6 +630,7 @@ export function createSiteContours(viewer, { boundary, fetchImpl } = {}) {
     hideContours,
     setContourInterval,
     setDatum,
+    setAutoAlign,
     showCanopy,
     hideCanopy,
     onChange(fn) {

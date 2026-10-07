@@ -18,6 +18,9 @@ const DATUM_LABEL = {
 
 const ACRES = (s) => (s?.areaAcres != null ? `${s.areaAcres} ac` : '');
 
+const fmtShift = (m, pos, neg) =>
+  `${Math.abs(m).toFixed(1)} m ${m >= 0 ? pos : neg}`;
+
 export function mountSiteTray({ site, dock, onOpenFeaturesCode } = {}) {
   const { boundary, orbit, contours } = site;
   const host = dock ?? document.getElementById('command-dock');
@@ -154,6 +157,14 @@ export function mountSiteTray({ site, dock, onOpenFeaturesCode } = {}) {
     $('draw').textContent = boundary.isDrawing ? 'Finish' : 'Draw';
   }
 
+  function alignNote(st) {
+    if (st.align?.pending) return ' · aligning to 3D mesh…';
+    if (st.align?.ok)
+      return ` · aligned to 3D mesh (${fmtShift(st.align.eastM, 'E', 'W')}, ${fmtShift(st.align.northM, 'N', 'S')})`;
+    if (st.datumShiftM) return ` · NAD83→WGS84 ${st.datumShiftM} m`;
+    return '';
+  }
+
   function syncContours(state = contours.describe()) {
     $('contours').checked = state.contoursOn;
     $('canopy').checked = state.canopyOn;
@@ -167,7 +178,7 @@ export function mountSiteTray({ site, dock, onOpenFeaturesCode } = {}) {
         rel && st.baseFt != null ? ` · 0 = ${st.baseFt} ft NAVD88` : '';
       say(
         'contour-status',
-        `${st.lines} lines · ${st.minFt}–${st.maxFt} ${DATUM_LABEL[st.datum] ?? 'ft'}${base} · ${st.resM} m grid${st.cached ? ' · cached' : ''}`,
+        `${st.lines} lines · ${st.minFt}–${st.maxFt} ${DATUM_LABEL[st.datum] ?? 'ft'}${base} · ${st.resM} m grid${st.cached ? ' · cached' : ''}${alignNote(st)}`,
         'ok',
       );
     } else if (!state.contoursOn) say('contour-status', '');

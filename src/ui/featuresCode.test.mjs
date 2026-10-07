@@ -109,6 +109,11 @@ function fakeSite() {
       calls.push(['hideCanopy']);
       contourState.canopyOn = false;
     },
+    async setAutoAlign(on) {
+      contourState.autoAlign = on;
+      calls.push(['setAutoAlign', on]);
+      return { ...contourState };
+    },
   };
   return { calls, site: { boundary, orbit, contours } };
 }
@@ -211,6 +216,11 @@ test('contour interval is a variable: contour <ft> and set contour <ft>', async 
   assert.match(h.lines.at(-1).text, /every 100 ft/);
   await h.run('contours off');
   assert.deepEqual(h.calls.at(-1), ['hideContours']);
+  await h.run('contour align off');
+  assert.deepEqual(h.calls.at(-1), ['setAutoAlign', false]);
+  assert.match(h.lines.at(-1).text, /alignment off/);
+  await h.run('contour align on');
+  assert.deepEqual(h.calls.at(-1), ['setAutoAlign', true]);
   assert.equal(await h.run('contour abc'), true);
   assert.match(h.lines.at(-1).text, /Usage: contour/);
 });
