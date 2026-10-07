@@ -1,6 +1,7 @@
 /**
  * SITE: dock popdown with the GUI for every site feature — boundary (draw,
- * import, export, clear), contours (on/off + 2–100 ft slider), canopy, and
+ * import, export, clear), contours (on/off + 2–100 ft slider), canopy,
+ * building mode (topography ⇄ clickable buildings/roads/parks), and
  * orbit/record. Features Code exposes the same actions as commands; both
  * call the same services.
  */
@@ -16,7 +17,7 @@ const fmtShift = (m, pos, neg) =>
   `${Math.abs(m).toFixed(1)} m ${m >= 0 ? pos : neg}`;
 
 export function mountSiteTray({ site, dock, onOpenFeaturesCode } = {}) {
-  const { boundary, orbit, contours } = site;
+  const { boundary, orbit, contours, buildings } = site;
   const host = dock ?? document.getElementById('command-dock');
   const item = document.createElement('div');
   item.id = 'site-tray';
@@ -84,6 +85,26 @@ export function mountSiteTray({ site, dock, onOpenFeaturesCode } = {}) {
           <span>Canopy overlay <small>(Google 3D mesh above ground)</small></span>
         </label>
         <p class="site-tray-status" data-st="canopy-status"></p>
+      </section>
+
+      <section class="site-tray-section" aria-labelledby="st-bldg-h">
+        <h3 id="st-bldg-h">View <small>topography or buildings</small></h3>
+        <div class="site-tray-segment" role="radiogroup" aria-label="Site view">
+          <button type="button" role="radio" data-st="view-topo" aria-checked="true">Topography</button>
+          <button type="button" role="radio" data-st="view-bldg" aria-checked="false">Buildings</button>
+        </div>
+        <label class="site-tray-select">Find buildings from
+          <select data-st="bldg-source">
+            <option value="auto" selected>OSM, then 3D mesh</option>
+            <option value="osm">OSM footprints only</option>
+            <option value="mesh">3D mesh scan (rectangles + walls)</option>
+          </select>
+        </label>
+        <p class="site-tray-status" data-st="bldg-status"></p>
+        <p class="site-tray-legend" aria-hidden="true">
+          <span class="lg-osm">OSM building</span><span class="lg-mesh">mesh-detected</span><span class="lg-road">road</span><span class="lg-park">park</span>
+        </p>
+        <p class="site-tray-note">Click a building, road or park for its dossier. Dossiers open as pop-outs; open several, drag them, or pop one into its own window.</p>
       </section>
 
       <section class="site-tray-section" aria-labelledby="st-orbit-h">
@@ -175,6 +196,34 @@ export function mountSiteTray({ site, dock, onOpenFeaturesCode } = {}) {
     else if (!state.canopyOn) say('canopy-status', '');
   }
 
+  function syncBuildings(state = buildings?.describe()) {
+    if (!state) return;
+    $('view-topo').setAttribute('aria-checked', String(!state.on));
+    $('view-bldg').setAttribute('aria-checked', String(state.on));
+    panel.classList.toggle('site-tray-bldg-on', state.on);
+    if (state.loading) return say('bldg-status', state.progress || 'Loading…');
+    if (state.error) return say('bldg-status', state.error, 'err');
+    if (!state.on)
+      return say(
+        'bldg-status',
+        boundary.site
+          ? 'Inside the boundary'
+          : 'No boundary: uses 500 m around the view centre',
+      );
+    const c = state.counts;
+    const from =
+      {
+        osm: 'OpenStreetMap',
+        mesh: '3D mesh scan',
+        'osm+mesh': 'OSM + 3D mesh',
+      }[state.source] ?? '';
+    say(
+      'bldg-status',
+      `${c.buildings} buildings · ${c.roads} roads · ${c.parks} parks · ${from}${state.osmError ? ` (OSM: ${state.osmError})` : ''}`,
+      'ok',
+    );
+  }
+
   // ---- boundary ----
   $('draw').addEventListener(
     'click',
@@ -257,6 +306,24 @@ export function mountSiteTray({ site, dock, onOpenFeaturesCode } = {}) {
     }
   });
 
+  // ---- view: topography / buildings ----
+  if (!buildings)
+    panel.querySelector('[aria-labelledby="st-bldg-h"]').hidden = true;
+  else {
+    const showBuildings = async () => {
+      try {
+        await buildings.show({ source: $('bldg-source').value });
+      } catch (error) {
+        say('bldg-status', error?.message || String(error), 'err');
+      }
+    };
+    $('view-bldg').addEventListener('click', showBuildings);
+    $('view-topo').addEventListener('click', () => buildings.hide());
+    $('bldg-source').addEventListener('change', () => {
+      if (buildings.describe().on) showBuildings();
+    });
+  }
+
   // ---- orbit ----
   $('orbit').addEventListener(
     'click',
@@ -305,6 +372,7 @@ export function mountSiteTray({ site, dock, onOpenFeaturesCode } = {}) {
     if (open) {
       syncBoundary();
       syncContours();
+      syncBuildings();
       place();
     }
   };
@@ -323,8 +391,12 @@ export function mountSiteTray({ site, dock, onOpenFeaturesCode } = {}) {
   const onResize = () => !panel.hidden && place();
   window.addEventListener('resize', onResize);
 
-  const offBoundary = boundary.onChange(() => syncBoundary());
+  const offBoundary = boundary.onChange(() => {
+    syncBoundary();
+    syncBuildings();
+  });
   const offContours = contours.onChange((state) => syncContours(state));
+  const offBuildings = buildings?.onChange((state) => syncBuildings(state));
 
   return {
     open: () => setOpen(true),
@@ -333,6 +405,7 @@ export function mountSiteTray({ site, dock, onOpenFeaturesCode } = {}) {
       clearTimeout(sliderTimer);
       offBoundary();
       offContours();
+      offBuildings?.();
       window.removeEventListener('resize', onResize);
       item.remove();
       panel.remove();

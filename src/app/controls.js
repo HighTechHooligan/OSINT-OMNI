@@ -5,6 +5,10 @@ import { initCockpitCloudEffects } from '../cockpitCloudEffects.js';
 import { createSiteBoundary } from '../services/siteBoundary.js';
 import { createSiteOrbit } from '../services/siteOrbit.js';
 import { createSiteContours } from '../services/siteContours.js';
+import { createSiteBuildings } from '../services/siteBuildings.js';
+import { createLocationResearch } from '../tools/locationResearch.js';
+import { createPopoutPanels } from '../ui/popoutPanels.js';
+import { openDossier } from '../ui/dossierPanel.js';
 import { mountFeaturesCode } from '../ui/featuresCode.js';
 import { mountSiteTray } from '../ui/siteTray.js';
 
@@ -44,10 +48,29 @@ export function createApplicationControls({
     beforeCameraControl: () => styleManager.orbitController?.stop(),
   });
   const siteContours = createSiteContours(viewer, { boundary: siteBoundary });
+  // Pop-out panels any feature can request (dossiers today). Building mode
+  // turns a click on a building, road or park into a dossier panel.
+  const popoutPanels = createPopoutPanels();
+  defer(() => popoutPanels.destroy());
+  // No crawler yet: the research stub shows the planned searches only.
+  const locationResearch = createLocationResearch();
+  const siteBuildings = createSiteBuildings(viewer, {
+    boundary: siteBoundary,
+    contours: siteContours,
+    onPick: (record) =>
+      openDossier({
+        panels: popoutPanels,
+        record,
+        buildings: siteBuildings,
+        research: locationResearch,
+      }),
+  });
+  defer(() => siteBuildings.destroy());
   const site = Object.freeze({
     boundary: siteBoundary,
     orbit: siteOrbit,
     contours: siteContours,
+    buildings: siteBuildings,
   });
   defer(() => siteContours.destroy());
   defer(() => siteOrbit.destroy());
@@ -57,6 +80,7 @@ export function createApplicationControls({
     site,
     // The data manager attaches after controls start; resolve it lazily.
     getDataManager: () => styleManager._dataManager ?? null,
+    panels: popoutPanels,
   });
   defer(() => featuresCode.destroy());
   const siteTray = mountSiteTray({
@@ -88,5 +112,6 @@ export function createApplicationControls({
     site,
     featuresCode,
     siteTray,
+    popoutPanels,
   };
 }

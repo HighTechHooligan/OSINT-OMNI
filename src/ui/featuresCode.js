@@ -19,6 +19,12 @@ Contours (USGS 3DEP bare earth, inside the boundary)
   contour <ft>             set the interval, 2-100 ft (also: set contour <ft>)
   contour align on | off   snap contours to the Google 3D mesh (measured per site)
   canopy on | off          shade tree/structure cover from the Google 3D mesh
+Buildings (inside the boundary, or 500 m around the view)
+  buildings on | off       switch the view from topography to buildings and back
+  buildings mesh | osm     find buildings from the 3D mesh scan or OSM only
+  dossier <n>              open the dossier for building n of "buildings list"
+  buildings list           list what building mode found
+  panels close             close every pop-out panel
 Camera
   zoom                     fly to the boundary
   orbit [sec]              live orbit, seconds per revolution (default 24)
@@ -82,10 +88,11 @@ export function createFeatureCommands({
   pickFile,
   viewer,
   getDataManager = () => null,
+  panels = null,
   allowEval = false,
   recordTitle = 'DJI LIDAR L2+ORTHO',
 }) {
-  const { boundary, orbit, contours } = site;
+  const { boundary, orbit, contours, buildings } = site;
   const loadedLine = (summary) =>
     print(`Loaded ${describeSite(summary)}`, 'ok');
 
@@ -234,6 +241,54 @@ export function createFeatureCommands({
       line.textContent = `Canopy: ${state.canopy.coveredPct}% of the site under trees/structures (${state.canopy.cellM} m cells)`;
       line.className = 'fc-ok';
     },
+    async buildings([value]) {
+      if (!buildings) return print('Building mode is not available', 'err');
+      const v = String(value ?? '').toLowerCase();
+      if (v === 'list') {
+        const list = buildings.list().filter((r) => r.kind === 'building');
+        if (!list.length)
+          return print('No buildings yet. Run "buildings on".', 'dim');
+        return print(
+          list
+            .slice(0, 40)
+            .map(
+              (r, i) =>
+                `${i + 1}. ${r.tags.name || r.id} · ${Math.round(r.measure.areaM2)} m² · ${r.height.heightM.toFixed(1)} m · ${Math.round(r.volumeM3)} m³`,
+            )
+            .join('\n'),
+          'dim',
+        );
+      }
+      const on =
+        v === 'mesh' || v === 'osm'
+          ? true
+          : (switchArg(v) ?? !buildings.describe().on);
+      if (!on) {
+        await buildings.hide();
+        return print('Back to topography', 'ok');
+      }
+      const line = print('Finding buildings…', 'dim');
+      const state = await buildings.show({
+        source: v === 'mesh' || v === 'osm' ? v : 'auto',
+      });
+      const c = state.counts;
+      line.textContent = `${c.buildings} buildings · ${c.roads} roads · ${c.parks} parks (${state.source})${state.osmError ? ` · OSM: ${state.osmError}` : ''}. Click one for its dossier.`;
+      line.className = 'fc-ok';
+    },
+    dossier([n]) {
+      const list = buildings?.list().filter((r) => r.kind === 'building') ?? [];
+      const record = list[intArg(n, 0, 1, list.length || 1) - 1];
+      if (!record)
+        return print('Usage: dossier <n> (see "buildings list")', 'err');
+      buildings.pick(record.id);
+      print(`Opened dossier for ${record.tags.name || record.id}`, 'ok');
+    },
+    panels([action]) {
+      if (String(action).toLowerCase() !== 'close')
+        return print('Usage: panels close', 'err');
+      panels?.closeAll();
+      print('Closed all pop-out panels', 'ok');
+    },
     async layer([name, value]) {
       const id = LAYER_ALIASES[String(name ?? '').toLowerCase()] ?? name;
       const dm = getDataManager();
@@ -297,7 +352,13 @@ export function createFeatureCommands({
  * Mount the dock button and console panel.
  * @param {{ viewer: object, site: object, getDataManager?: Function, dock?: HTMLElement|null }} options
  */
-export function mountFeaturesCode({ viewer, site, getDataManager, dock } = {}) {
+export function mountFeaturesCode({
+  viewer,
+  site,
+  getDataManager,
+  dock,
+  panels,
+} = {}) {
   const host = dock ?? document.getElementById('command-dock');
   const item = document.createElement('div');
   item.id = 'features-code';
@@ -366,6 +427,7 @@ export function mountFeaturesCode({ viewer, site, getDataManager, dock } = {}) {
     clearOutput: () => out.replaceChildren(),
     pickFile,
     viewer,
+    panels,
     allowEval: Boolean(import.meta.env?.DEV),
   });
 

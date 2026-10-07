@@ -26,5 +26,6 @@
 
 @import './src/ui/styles/weather.css';
 @import './src/ui/styles/panel-surfaces.css';
+@import './src/ui/styles/popout-panels.css';
 @import './src/ui/styles/theme-omni.css';
 @import './src/ui/styles/cyber.css';

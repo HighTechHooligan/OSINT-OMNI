@@ -920,5 +920,16 @@
   "src/tools/views.test.mjs",
   "src/app/embed.test.mjs",
   "src/tools/globePanel.test.mjs",
-  "src/costEndpointThrottle.test.mjs"
+  "src/costEndpointThrottle.test.mjs",
+  "src/services/buildingMath.js",
+  "src/services/dossierModel.js",
+  "src/services/siteBuildings.js",
+  "src/tools/locationResearch.js",
+  "src/ui/dossierPanel.js",
+  "src/ui/popoutPanels.js",
+  "src/services/buildingMath.test.mjs",
+  "src/services/dossierModel.test.mjs",
+  "src/tools/locationResearch.test.mjs",
+  "src/tooling/nominatimReverseRoute.test.mjs",
+  "src/ui/styles/popout-panels.css"
 ]

@@ -2077,7 +2077,13 @@
       "src/app/layers/osmStreets.js",
       "src/layers/osmStreets/index.js",
       "src/layers/osmStreets/records.js",
-      "src/layers/osmStreets/source.js"
+      "src/layers/osmStreets/source.js",
+      "src/services/buildingMath.js",
+      "src/services/dossierModel.js",
+      "src/services/siteBuildings.js",
+      "src/tools/locationResearch.js",
+      "src/ui/dossierPanel.js",
+      "src/ui/popoutPanels.js"
     ],
     "external": [
       "hls.js",
