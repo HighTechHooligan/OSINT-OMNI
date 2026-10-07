@@ -6,6 +6,11 @@
  * call later; the `js` escape hatch is for the person at the keyboard only.
  */
 import { normalizeDatum } from '../services/contourMath.js';
+import {
+  describeSummary,
+  describeTurbine,
+  nearestTurbine,
+} from '../layers/windTurbines/records.js';
 
 export const FEATURES_CODE_HELP = `Every feature here is also in the SITE panel in the dock.
 Boundary
@@ -31,6 +36,9 @@ Camera
   record [frames] [w] [h]  record the orbit as a GIF (default 144, 800x450)
 Layers
   layer osm on | off       light OSM streets + building footprints
+  turbines [on | off]      US wind turbines (USGS USWTDB); bare = summary
+                           of turbines in view (count, MW, tallest)
+  turbines near            the turbine nearest the view centre
 Console
   cls                      clear this console
   js <expression>          run JavaScript (dev only; viewer, site in scope)
@@ -88,7 +96,11 @@ const DATUM_USAGE = 'Usage: elev asl | relative';
 const LAYER_ALIASES = Object.freeze({
   osm: 'osm-streets',
   streets: 'osm-streets',
+  turbines: 'wind-turbines',
+  uswtdb: 'wind-turbines',
 });
+
+const TURBINES_ID = 'wind-turbines';
 
 /**
  * Build the command table. Dependencies are injected so it is testable
@@ -157,6 +169,16 @@ export function createFeatureCommands({
     if (contours.describe().contoursOn) return contourSwitch(true, { datum });
     await contours.setDatum(datum);
     print(`Elevations: ${datumWords(datum)} (run "contours on" to draw)`, 'ok');
+  }
+
+  /** Turn a data layer on/off (null toggles) through the data manager. */
+  async function setLayer(id, want, label = id) {
+    const dm = getDataManager();
+    if (!dm?.layers?.has?.(id)) return print(`Unknown layer "${label}"`, 'err');
+    const target = want ?? !dm.isEffectivelyEnabled(id);
+    if (dm.isEffectivelyEnabled(id) !== target)
+      await dm.toggle(id, { origin: 'user' });
+    print(`${id} ${target ? 'on' : 'off'}`, 'ok');
   }
 
   const commands = {
@@ -281,14 +303,45 @@ export function createFeatureCommands({
     },
     async layer([name, value]) {
       const id = LAYER_ALIASES[String(name ?? '').toLowerCase()] ?? name;
-      const dm = getDataManager();
       if (!id) return print('Usage: layer osm on|off', 'err');
-      if (!dm?.layers?.has?.(id))
-        return print(`Unknown layer "${name}"`, 'err');
-      const want = switchArg(value) ?? !dm.isEffectivelyEnabled(id);
-      if (dm.isEffectivelyEnabled(id) !== want)
-        await dm.toggle(id, { origin: 'user' });
-      print(`${id} ${want ? 'on' : 'off'}`, 'ok');
+      await setLayer(id, switchArg(value), name);
+    },
+    async turbines([arg]) {
+      const on = switchArg(arg);
+      if (on !== null) return setLayer(TURBINES_ID, on);
+      const near = String(arg ?? '').toLowerCase() === 'near';
+      if (arg !== undefined && !near)
+        return print('Usage: turbines [on|off|near]', 'err');
+      const dm = getDataManager();
+      const layer = dm?.layers?.get?.(TURBINES_ID)?.module;
+      if (!layer) return print('Wind turbine layer unavailable', 'err');
+      if (!dm.isEffectivelyEnabled(TURBINES_ID))
+        await setLayer(TURBINES_ID, true);
+      const line = print('Loading USWTDB turbines in view…', 'dim');
+      await layer.update?.();
+      const view = layer.getView?.();
+      const error = layer.getStats?.().error;
+      if (!view) {
+        line.textContent = error || 'No wind turbine data yet';
+        line.className = 'fc-err';
+        return;
+      }
+      line.className = 'fc-ok';
+      if (!near) {
+        line.textContent = describeSummary(view);
+        return;
+      }
+      const at = viewer?.camera?.positionCartographic;
+      const hit =
+        at &&
+        nearestTurbine(
+          view.turbines,
+          (at.longitude * 180) / Math.PI,
+          (at.latitude * 180) / Math.PI,
+        );
+      line.textContent = hit
+        ? `${hit.km.toFixed(1)} km: ${describeTurbine(hit.turbine)}`
+        : 'No turbines in view';
     },
   };
   if (allowEval) {

@@ -279,6 +279,62 @@ test('layer osm toggles through the data manager', async () => {
   assert.match(h.lines.at(-1).text, /Unknown layer/);
 });
 
+test('turbines toggles the layer and prints the view summary', async () => {
+  let enabled = false;
+  const toggles = [];
+  const view = {
+    sampled: false,
+    turbines: [
+      { id: '1', lon: -100, lat: 32, kw: 2000, tipM: 150, project: 'Roscoe' },
+    ],
+    summary: {
+      turbines: 1,
+      mw: 2,
+      projects: 1,
+      topProjects: [{ name: 'Roscoe', count: 1 }],
+      tallest: { tipM: 150, project: 'Roscoe' },
+    },
+  };
+  let updates = 0;
+  const module = {
+    update: async () => updates++,
+    getView: () => view,
+    getStats: () => ({ error: null }),
+  };
+  const dm = {
+    layers: new Map([['wind-turbines', { module }]]),
+    isEffectivelyEnabled: () => enabled,
+    toggle: async (id) => {
+      toggles.push(id);
+      enabled = !enabled;
+    },
+  };
+  const viewer = {
+    camera: {
+      positionCartographic: {
+        longitude: (-100.1 * Math.PI) / 180,
+        latitude: (32 * Math.PI) / 180,
+      },
+    },
+  };
+  const h = harness({ getDataManager: () => dm, viewer });
+  await h.run('turbines');
+  assert.deepEqual(toggles, ['wind-turbines']);
+  assert.equal(updates, 1);
+  assert.match(h.lines.at(-1).text, /1 turbines in view · 2 MW/);
+  await h.run('turbines near');
+  assert.match(h.lines.at(-1).text, /km: Turbine · 2000 kW/);
+  await h.run('turbines off');
+  await h.run('layer turbines on');
+  assert.deepEqual(toggles, [
+    'wind-turbines',
+    'wind-turbines',
+    'wind-turbines',
+  ]);
+  await h.run('turbines sideways');
+  assert.match(h.lines.at(-1).text, /Usage: turbines/);
+});
+
 test('unknown commands and inherited names are rejected', async () => {
   const h = harness();
   assert.equal(await h.run('launch'), false);
