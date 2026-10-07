@@ -2,6 +2,8 @@ import { catalogControlServices } from './catalog.js';
 import { StyleManager } from '../ui/composition.js';
 import { flyToAustin } from '../camera.js';
 import { initCockpitCloudEffects } from '../cockpitCloudEffects.js';
+import { createSiteOrbit } from '../services/siteOrbit.js';
+import { mountFeaturesCode } from '../ui/featuresCode.js';
 
 /** Construct the existing controls and camera presentation. */
 export function createApplicationControls({
@@ -30,6 +32,13 @@ export function createApplicationControls({
   defer(() => styleManager.orbitController.stop());
   defer(() => styleManager.hud.destroy());
   defer(() => styleManager.dispose());
+  // Features Code: dock command line driving site orbit (no AI required).
+  const siteOrbit = createSiteOrbit(viewer, {
+    beforeCameraControl: () => styleManager.orbitController?.stop(),
+  });
+  defer(() => siteOrbit.destroy());
+  const featuresCode = mountFeaturesCode({ viewer, orbit: siteOrbit });
+  defer(() => featuresCode.destroy());
   // The previous multi-canvas weather compositor remains disabled. Cockpit
   // clouds use a separate, capped low-resolution GPU pass that never attaches
   // Cesium fog or post-process stages and is fully stopped in map mode.
@@ -47,5 +56,11 @@ export function createApplicationControls({
     loaderStatus.textContent = 'Restoring shared view...';
   }
 
-  return { styleManager, weatherEffects, cockpitCloudEffects };
+  return {
+    styleManager,
+    weatherEffects,
+    cockpitCloudEffects,
+    siteOrbit,
+    featuresCode,
+  };
 }
