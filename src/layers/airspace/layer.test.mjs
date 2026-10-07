@@ -87,3 +87,53 @@ test('layer loads TFRs, renders entities, toggles kinds and checks a point', asy
   layer.destroy();
   assert.equal(viewer.sources.length, 0);
 });
+
+test('3D mode extrudes stacked shelves and rims their MSL floors and ceilings', async () => {
+  const msl = (ft) => ({ known: true, ft, ref: 'MSL', label: `${ft} MSL` });
+  const sfc = { known: true, ft: 0, ref: 'AGL', label: 'SFC' };
+  const shelves = [
+    {
+      id: 'class:core',
+      lower: sfc,
+      upper: msl(10000),
+      polygons: square(0, 0, 1, 1),
+    },
+    {
+      id: 'class:shelf',
+      lower: msl(3000),
+      upper: msl(10000),
+      polygons: square(-1, -1, 2, 2),
+    },
+  ].map((row) => ({ kind: 'class', cls: 'B', ...row }));
+  const source = {
+    getTfrs: async () => ({ rows: [] }),
+    getArea: async (kind) => ({ rows: kind === 'class' ? shelves : [] }),
+  };
+  const layer = createAirspaceLayer({ source });
+  const viewer = fakeViewer();
+  viewer.camera.computeViewRectangle = () => ({
+    west: -0.02,
+    south: -0.02,
+    east: 0.04,
+    north: 0.04,
+  });
+  layer.init(viewer);
+  layer.enable();
+  layer.setParams({ tfr: false, sua: false, volumes: true });
+  await layer.update();
+  const ds = viewer.sources.find((d) => d.name === 'airspace-class');
+  const ids = ds.entities.values.map((e) => e.id).sort();
+  // Core: volume + ceiling rim (SFC floor gets none). Shelf: volume + both rims.
+  assert.deepEqual(ids, [
+    'airspace:class:core:0',
+    'airspace:class:core:0:rim-ceiling',
+    'airspace:class:shelf:0',
+    'airspace:class:shelf:0:rim-ceiling',
+    'airspace:class:shelf:0:rim-floor',
+  ]);
+  const shelf = ds.entities.getById('airspace:class:shelf:0');
+  assert.ok(Math.abs(shelf.polygon.height.getValue() - 914.4) < 0.01);
+  layer.setParams({ volumes: false });
+  assert.equal(ds.entities.values.length, 2);
+  layer.destroy();
+});

@@ -137,7 +137,7 @@ export function createAirspaceLayer({
           extrudedHeight: ftToM(row.upper.ft),
           extrudedHeightReference: heightRef(row.upper.ref),
         });
-        fillAlpha = 0.1;
+        fillAlpha = 0.12;
       }
       polygon.material = new Cesium.ColorMaterialProperty(
         color.withAlpha(fillAlpha),
@@ -153,6 +153,31 @@ export function createAirspaceLayer({
           ),
         };
       entities.push(new Cesium.Entity(entity));
+      // Tier rims: a crisp ring at each MSL floor and ceiling so stacked
+      // shelves read as a wedding cake instead of one translucent blur.
+      // AGL limits get no rim (polylines cannot follow terrain height).
+      if (volumes && row.kind !== 'laanc') {
+        for (const [side, limit] of [
+          ['floor', row.lower],
+          ['ceiling', row.upper],
+        ]) {
+          if (limit.ref !== 'MSL' || !(limit.ft > 0)) continue;
+          entities.push(
+            new Cesium.Entity({
+              id: `${id}:rim-${side}`,
+              polyline: {
+                positions: outer.map(([lon, lat]) =>
+                  Cesium.Cartesian3.fromDegrees(lon, lat, ftToM(limit.ft)),
+                ),
+                width: side === 'ceiling' ? 2 : 1.5,
+                material: new Cesium.ColorMaterialProperty(
+                  color.withAlpha(0.85),
+                ),
+              },
+            }),
+          );
+        }
+      }
     });
     return entities;
   }
