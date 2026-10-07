@@ -6,6 +6,7 @@
  * call later; the `js` escape hatch is for the person at the keyboard only.
  */
 import { normalizeDatum } from '../services/contourMath.js';
+import { formatCountdown } from '../services/phoneLink.js';
 
 export const FEATURES_CODE_HELP = `Every feature here is also in the SITE panel in the dock.
 Boundary
@@ -31,6 +32,12 @@ Camera
   record [frames] [w] [h]  record the orbit as a GIF (default 144, 800x450)
 Layers
   layer osm on | off       light OSM streets + building footprints
+Places
+  goto <place | lat, lon>  fly there (same search as the LOCATION bar)
+Phone remote (also the PHONE button in the dock)
+  phone pair               show a code to pair a phone on this Wi-Fi
+  phone devices            list paired phones
+  phone revoke <id|all>    unpair a phone
 Console
   cls                      clear this console
   js <expression>          run JavaScript (dev only; viewer, site in scope)
@@ -106,6 +113,8 @@ export function createFeatureCommands({
   getDataManager = () => null,
   allowEval = false,
   recordTitle = 'DJI LIDAR L2+ORTHO',
+  phone = null,
+  goTo = null,
 }) {
   const { boundary, orbit, contours } = site;
   const loadedLine = (summary) =>
@@ -290,6 +299,57 @@ export function createFeatureCommands({
         await dm.toggle(id, { origin: 'user' });
       print(`${id} ${want ? 'on' : 'off'}`, 'ok');
     },
+    async goto(_args, raw) {
+      if (!raw) return print('Usage: goto <place | lat, lon>', 'err');
+      if (!goTo) return print('Place search is not available', 'err');
+      await goTo(raw);
+      print(`Flying to ${raw}`, 'ok');
+    },
+    async phone([action = 'status', id]) {
+      if (!phone) return print('The phone remote is not available', 'err');
+      const describeDevices = (devices) =>
+        devices.length
+          ? devices
+              .map(
+                (d) =>
+                  `${d.id}  ${d.name}  (paired ${new Date(d.pairedAt).toLocaleTimeString()})`,
+              )
+              .join('\n')
+          : 'No phones paired';
+      switch (action.toLowerCase()) {
+        case 'pair': {
+          const state = await phone.startPairing();
+          print(
+            `Pairing code ${state.pairing.code} (expires in ${formatCountdown(state.pairing.expiresAt)})`,
+            'ok',
+          );
+          return print(
+            state.lanReady
+              ? `On the phone, open ${state.urls.join(' or ')}`
+              : state.hint,
+            state.lanReady ? 'dim' : 'err',
+          );
+        }
+        case 'devices':
+          return print(describeDevices((await phone.refresh()).devices), 'dim');
+        case 'revoke': {
+          if (!id) return print('Usage: phone revoke <id|all>', 'err');
+          const state = await phone.revoke(id);
+          return print(`Revoked. ${describeDevices(state.devices)}`, 'ok');
+        }
+        default: {
+          const state = await phone.refresh();
+          const { bridgeOn } = phone.describe();
+          return print(
+            `${state.devices.length} phone(s) paired · ${bridgeOn ? 'taking phone commands' : 'not taking phone commands'}` +
+              (state.lanReady
+                ? ` · ${state.urls.join(' or ')}`
+                : ` · ${state.hint}`),
+            'dim',
+          );
+        }
+      }
+    },
   };
   if (allowEval) {
     commands.js = async (_args, raw) => {
@@ -339,10 +399,53 @@ export function createFeatureCommands({
 }
 
 /**
+ * Run Features Code lines without the console, collecting what they print.
+ * The phone bridge uses this; it never offers `js` and never picks files.
+ */
+export function createCapturedRunner(deps) {
+  let lines = [];
+  const print = (text, tone = '') => {
+    // Commands rewrite a line they printed (progress -> result); keep the
+    // object so the final text is what gets reported.
+    const line = {
+      textContent: String(text),
+      className: tone ? `fc-${tone}` : '',
+    };
+    lines.push(line);
+    return line;
+  };
+  const { run } = createFeatureCommands({
+    ...deps,
+    print,
+    clearOutput: () => {},
+    pickFile: async () => null,
+    allowEval: false,
+  });
+  return async (line) => {
+    lines = [];
+    const ok = await run(line);
+    return {
+      ok,
+      lines: lines.map((l) => ({
+        text: l.textContent,
+        tone: String(l.className).replace(/^fc-/, ''),
+      })),
+    };
+  };
+}
+
+/**
  * Mount the dock button and console panel.
  * @param {{ viewer: object, site: object, getDataManager?: Function, dock?: HTMLElement|null }} options
  */
-export function mountFeaturesCode({ viewer, site, getDataManager, dock } = {}) {
+export function mountFeaturesCode({
+  viewer,
+  site,
+  getDataManager,
+  dock,
+  phone,
+  goTo,
+} = {}) {
   const host = dock ?? document.getElementById('command-dock');
   const item = document.createElement('div');
   item.id = 'features-code';
@@ -412,6 +515,8 @@ export function mountFeaturesCode({ viewer, site, getDataManager, dock } = {}) {
     pickFile,
     viewer,
     allowEval: Boolean(import.meta.env?.DEV),
+    phone,
+    goTo,
   });
 
   const place = () => {

@@ -1,5 +1,6 @@
-/* ── SITE: dock item + popdown (boundary, contours, canopy, orbit) ── */
-#command-dock > #site-tray {
+/* ── SITE: dock item + popdown (boundary, contours, canopy, orbit) ──
+   The PHONE dock item (src/ui/phoneTray.js) reuses these styles. */
+#command-dock > :is(#site-tray, #phone-tray) {
   position: relative;
   order: -1;
   display: flex;
@@ -23,11 +24,11 @@
     box-shadow 160ms ease;
 }
 
-#command-dock > #site-tray:hover {
+#command-dock > :is(#site-tray, #phone-tray):hover {
   border-color: var(--glass-border-hover);
 }
 
-#command-dock > #site-tray.open {
+#command-dock > :is(#site-tray, #phone-tray).open {
   border-color: rgba(var(--accent-rgb), 0.55);
   box-shadow:
     0 8px 32px rgba(0, 0, 0, 0.5),
@@ -79,7 +80,7 @@
 }
 
 .site-tray-toggle:hover .site-tray-label,
-#site-tray.open .site-tray-label {
+:is(#site-tray, #phone-tray).open .site-tray-label {
   color: var(--text-primary);
 }
 

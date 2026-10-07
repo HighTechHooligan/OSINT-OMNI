@@ -5,8 +5,10 @@ import { initCockpitCloudEffects } from '../cockpitCloudEffects.js';
 import { createSiteBoundary } from '../services/siteBoundary.js';
 import { createSiteOrbit } from '../services/siteOrbit.js';
 import { createSiteContours } from '../services/siteContours.js';
-import { mountFeaturesCode } from '../ui/featuresCode.js';
+import { createCapturedRunner, mountFeaturesCode } from '../ui/featuresCode.js';
 import { mountSiteTray } from '../ui/siteTray.js';
+import { captureView, createPhoneLink } from '../services/phoneLink.js';
+import { mountPhoneTray } from '../ui/phoneTray.js';
 
 /** Construct the existing controls and camera presentation. */
 export function createApplicationControls({
@@ -52,11 +54,24 @@ export function createApplicationControls({
   defer(() => siteContours.destroy());
   defer(() => siteOrbit.destroy());
   defer(() => siteBoundary.destroy());
+  // The data manager attaches after controls start; resolve it lazily.
+  const getDataManager = () => styleManager._dataManager ?? null;
+  // The LOCATION bar's search, so `goto` flies exactly as typing there does.
+  const goTo = (query) => styleManager._locationLookup?.run(query);
+  // Phone remote: a paired phone sends Features Code lines; they run here
+  // through the same command table (without `js` or `phone`).
+  const phone = createPhoneLink({
+    runCommand: createCapturedRunner({ site, viewer, getDataManager, goTo }),
+    snapshot: () => captureView(viewer),
+  });
+  phone.startBridge();
+  defer(() => phone.destroy());
   const featuresCode = mountFeaturesCode({
     viewer,
     site,
-    // The data manager attaches after controls start; resolve it lazily.
-    getDataManager: () => styleManager._dataManager ?? null,
+    getDataManager,
+    phone,
+    goTo,
   });
   defer(() => featuresCode.destroy());
   const siteTray = mountSiteTray({
@@ -64,6 +79,8 @@ export function createApplicationControls({
     onOpenFeaturesCode: () => featuresCode.open(),
   });
   defer(() => siteTray.destroy());
+  const phoneTray = mountPhoneTray({ phone });
+  defer(() => phoneTray.destroy());
   // The previous multi-canvas weather compositor remains disabled. Cockpit
   // clouds use a separate, capped low-resolution GPU pass that never attaches
   // Cesium fog or post-process stages and is fully stopped in map mode.
@@ -88,5 +105,7 @@ export function createApplicationControls({
     site,
     featuresCode,
     siteTray,
+    phone,
+    phoneTray,
   };
 }
