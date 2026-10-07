@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+- **VIEWSHED tab: points, routes and areas**: the viewshed moved out of SITE
+  into its own dock tab. The observer can be a point, a route (a walking
+  path or a drive, clicked on the map or pasted as coordinates/KML), an
+  area (a park, a radius circle, or the SITE boundary). The eye band now
+  defaults to 0–2.5 m and the reach to 1 km either side (up to 5 km); the
+  SITE boundary is optional ("Inside SITE boundary only"). A route or area
+  becomes many observers, each tracing only the cells within its reach, all
+  drawn into one GPU target with MAX blending; the grid's cell size and the
+  observer count are picked to fit the GPU at hand. Long drives fetch 3DEP
+  as a corridor of tiles (a 52 km drive is 23 tiles). The tab keeps its own
+  orbit and GIF recording around the observer and its reach. Features Code:
+  `viewshed route|area|circle|reach|clip|orbit`.
 - **Viewshed mesh heights in seconds, and GPU check**: 3D mesh heights now
   come from one top-down depth snapshot of the Google tiles (the camera
   looks straight down, the tiles for that view load, and one frame's depth

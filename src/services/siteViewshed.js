@@ -1,17 +1,25 @@
 /**
- * Viewshed inside the site boundary: put an observer (click, or lat/lon)
- * and shade what they can see. Eye height is one value or a band (default
- * 1–2.5 m): green = seen even from the low eye, amber = seen only from the
- * high eye, red = hidden. A white outline marks the edge of what the high
- * eye sees and a cyan secondary outline the edge for the low eye.
+ * Viewshed: what can be seen from a point, along a route (a walking path or
+ * a drive), or from anywhere in an area (a park, a radius circle). Eye
+ * height is one value or a band (default 0–2.5 m): green = seen even from
+ * the low eye, amber = seen only from the high eye, red = hidden. A white
+ * outline marks the edge of what the high eye sees and a cyan secondary
+ * outline the edge for the low eye.
+ *
+ * The analysed area is everything within `reachM` (default 1 km, at most
+ * 5 km) of the shape, optionally clipped to the SITE boundary. A route or
+ * area becomes many observers a few cells apart, each judging only the
+ * cells within its reach; a cell takes the best result any observer gives
+ * it.
  *
  * Height model, in order (`source: 'auto'`):
- *  1. Google 3D mesh (with the photoreal map source on): a surface model, so
- *     buildings and trees block the view.
- *  2. USGS 3DEP bare earth (/api/elevation/3dep), at the contours'
- *     resolution so both share the server's cache.
+ *  1. Google 3D mesh (with the photoreal map source on, areas up to 25 km²):
+ *     a surface model, so buildings and trees block the view. One top-down
+ *     depth snapshot (meshSnapshot.js).
+ *  2. USGS 3DEP bare earth (/api/elevation/3dep); long routes are fetched
+ *     as a corridor of tiles and stitched.
  *  3. The globe's terrain provider, when it has real heights.
- * Heights load once per boundary; changing heights only re-runs the sight
+ * Heights load once per area; changing heights only re-runs the sight
  * lines, which go to the GPU (viewshedEngine) or, failing that, CPU workers.
  */
 import * as Cesium from 'cesium';
@@ -23,14 +31,10 @@ import {
   gridResolutionM,
   gridToLonLat,
 } from './siteContours.js';
-import {
-  boundaryAreaM2,
-  boundaryBbox,
-  haversineMeters,
-  pointInRing,
-} from './siteGeometry.js';
+import { haversineMeters, pointInRing } from './siteGeometry.js';
 import { captureMeshHeights, meshSnapshotSupported } from './meshSnapshot.js';
-import { createViewshedEngine } from './viewshedEngine.js';
+import { pickShape as pickShapeOnGlobe } from './shapePicker.js';
+import { affordableObservers, createViewshedEngine } from './viewshedEngine.js';
 import {
   BAND,
   VIEWSHED_DEFAULTS,
@@ -39,19 +43,35 @@ import {
   downsampleHeights,
   rowRuns,
 } from './viewshedMath.js';
+import {
+  SHAPE_LIMITS,
+  bboxSizeM,
+  describeShape,
+  expandBbox,
+  normalizeShape,
+  planDemTiles,
+  shapeBbox,
+  shapeObservers,
+  shapePoints,
+  workCellM,
+} from './viewshedShapes.js';
 
 export const SITE_VIEWSHED_DEFAULTS = Object.freeze({
   ...VIEWSHED_DEFAULTS,
-  lowM: 1,
+  lowM: 0,
   highM: 2.5,
+  reachM: 1000,
+  clip: false,
   source: 'auto',
   gpu: 'dedicated',
   meshMaxCells: 250_000, // one top-down depth snapshot
   meshSampleMaxCells: 40_000, // point-by-point fallback
+  meshMaxAreaM2: 25e6, // bigger areas: the snapshot's tiles get too coarse
   meshTimeoutMs: 15_000,
   terrainMaxCells: 40_000,
   sampleBatch: 250,
   sampleConcurrency: 4,
+  demConcurrency: 4,
 });
 
 const COLORS = {
@@ -63,12 +83,12 @@ const COLORS = {
   observer: '#FFFFFF',
 };
 const ALPHA = { both: 0.42, highOnly: 0.45, hidden: 0.3 };
-const M_PER_DEG_LAT = 111_320;
 const SOURCE_LABEL = {
   mesh: 'Google 3D mesh (buildings + trees block)',
   dem: 'USGS 3DEP bare earth',
   terrain: 'globe terrain',
 };
+const KIND_LABEL = { point: 'Point', line: 'Route', area: 'Area' };
 
 export function createSiteViewshed(
   viewer,
@@ -76,6 +96,7 @@ export function createSiteViewshed(
     boundary,
     fetchImpl = (...a) => fetch(...a),
     createEngine = createViewshedEngine,
+    pickShapeImpl = pickShapeOnGlobe,
   } = {},
 ) {
   if (!viewer?.scene) throw new TypeError('Viewshed requires a Cesium viewer');
@@ -83,15 +104,17 @@ export function createSiteViewshed(
   const state = {
     on: false,
     loading: false,
-    picking: false,
+    picking: null, // shape kind being drawn
     progress: '',
     error: null,
     lowM: SITE_VIEWSHED_DEFAULTS.lowM,
     highM: SITE_VIEWSHED_DEFAULTS.highM,
+    reachM: SITE_VIEWSHED_DEFAULTS.reachM,
+    clip: SITE_VIEWSHED_DEFAULTS.clip,
     gpu: SITE_VIEWSHED_DEFAULTS.gpu,
     targetM: SITE_VIEWSHED_DEFAULTS.targetM,
     source: SITE_VIEWSHED_DEFAULTS.source,
-    observer: null, // [lon, lat]
+    shape: null,
     result: null,
   };
   const listeners = new Set();
@@ -101,9 +124,8 @@ export function createSiteViewshed(
     emit();
   };
   let overlay = null;
-  let marker = null;
-  let handler = null;
-  let cancelPick = null;
+  let shapeEntities = [];
+  let picker = null;
   let gridCache = { key: null, promise: null };
   let engine = null;
   let run = 0;
@@ -121,23 +143,42 @@ export function createSiteViewshed(
     return false;
   }
 
-  function requireArea() {
-    if (!boundary?.site)
-      throw new Error(
-        'The viewshed works inside a site boundary. Import a KML, paste coordinates, draw one, or add a radius circle first.',
-      );
-    const ring = boundary.site.boundary;
-    return { ring, bbox: boundary.site.bbox ?? boundaryBbox(ring) };
+  /**
+   * The analysed area: the shape's bbox grown by the reach, or the SITE
+   * boundary's part of it when clipping.
+   */
+  function analysisArea(shape) {
+    let bbox = expandBbox(shapeBbox(shape), state.reachM);
+    let ring = null;
+    if (state.clip) {
+      const site = boundary?.site;
+      if (!site)
+        throw new Error(
+          'Clip to site needs a site boundary. Turn clip off or add one in SITE.',
+        );
+      ring = site.boundary;
+      const s = site.bbox ?? shapeBbox({ kind: 'area', ring });
+      bbox = {
+        minLon: Math.max(bbox.minLon, s.minLon),
+        minLat: Math.max(bbox.minLat, s.minLat),
+        maxLon: Math.min(bbox.maxLon, s.maxLon),
+        maxLat: Math.min(bbox.maxLat, s.maxLat),
+      };
+      if (bbox.minLon >= bbox.maxLon || bbox.minLat >= bbox.maxLat)
+        throw new Error(
+          'The shape and its reach are outside the site boundary.',
+        );
+    }
+    const { widthM, heightM } = bboxSizeM(bbox);
+    return { bbox, ring, areaM2: widthM * heightM, shape };
   }
 
   /** A regular lon/lat grid over the bbox with about `maxCells` cells. */
   function lonLatGrid(bbox, maxCells) {
-    const midLat = ((bbox.minLat + bbox.maxLat) / 2) * (Math.PI / 180);
-    const wM = (bbox.maxLon - bbox.minLon) * M_PER_DEG_LAT * Math.cos(midLat);
-    const hM = (bbox.maxLat - bbox.minLat) * M_PER_DEG_LAT;
-    const cellM = Math.max(1, Math.sqrt((wM * hM) / maxCells));
-    const width = Math.max(2, Math.ceil(wM / cellM));
-    const height = Math.max(2, Math.ceil(hM / cellM));
+    const { widthM, heightM } = bboxSizeM(bbox);
+    const cellM = Math.max(1, Math.sqrt((widthM * heightM) / maxCells));
+    const width = Math.max(2, Math.ceil(widthM / cellM));
+    const height = Math.max(2, Math.ceil(heightM / cellM));
     return {
       width,
       height,
@@ -207,6 +248,9 @@ export function createSiteViewshed(
    * sampling where the snapshot is not supported.
    */
   async function loadMesh(area, budget) {
+    if (!hasPhotorealTiles()) throw new Error('needs the Google 3D map source');
+    if (area.areaM2 > SITE_VIEWSHED_DEFAULTS.meshMaxAreaM2)
+      throw new Error('area too big for a mesh snapshot');
     if (meshSnapshotSupported(scene)) {
       const pixels = scene.drawingBufferWidth * scene.drawingBufferHeight;
       const cells = Math.min(
@@ -227,12 +271,73 @@ export function createSiteViewshed(
     );
   }
 
-  /** 3DEP at the contours' resolution: a cache hit when contours ran. */
-  async function loadDem(area) {
-    const res = gridResolutionM(boundaryAreaM2(area.ring));
-    const grid = await fetchElevationGrid(area.bbox, res, { fetchImpl });
-    grid.shift = gridDatumShift(grid);
+  /**
+   * 3DEP for the area. A small area is one request at the contours'
+   * resolution (a cache hit when contours ran). A long route is a corridor
+   * of tiles, each small enough for the proxy, stitched into one grid.
+   */
+  async function loadDem(area, budget) {
+    // 3% headroom: a grid a hair over budget would be halved by fitToBudget.
+    const resM = Math.max(
+      gridResolutionM(area.areaM2),
+      Math.sqrt(area.areaM2 / budget) * 1.03,
+    );
+    const tiles = planDemTiles(area.bbox, resM, area.shape, state.reachM);
+    say('Loading USGS 3DEP elevation…');
+    const whole =
+      tiles.length === 1 &&
+      tiles[0].minLon === area.bbox.minLon &&
+      tiles[0].maxLat === area.bbox.maxLat;
+    if (whole) {
+      const grid = await fetchElevationGrid(area.bbox, resM, { fetchImpl });
+      grid.shift = gridDatumShift(grid);
+      return fitToBudget(grid, budget);
+    }
+    const grid = lonLatGrid(area.bbox, budget);
+    let next = 0;
+    let done = 0;
+    let first = null;
+    const lane = async () => {
+      while (next < tiles.length) {
+        const tile = tiles[next++];
+        const part = await fetchElevationGrid(tile, resM, { fetchImpl });
+        first ??= part;
+        pasteInto(grid, part);
+        done++;
+        say(`Loading USGS 3DEP elevation… ${done}/${tiles.length} tiles`);
+      }
+    };
+    await Promise.all(
+      Array.from({ length: SITE_VIEWSHED_DEFAULTS.demConcurrency }, lane),
+    );
+    grid.datum = first?.datum;
+    grid.shift = first ? gridDatumShift({ ...first, bbox: area.bbox }) : null;
+    grid.tiles = tiles.length;
     return grid;
+  }
+
+  /** Nearest-sample copy of a tile grid into the grid cells it covers. */
+  function pasteInto(grid, part) {
+    const { bbox: g, width: W, height: H } = grid;
+    const { bbox: t, width: w, height: h, values } = part;
+    const sx = (g.maxLon - g.minLon) / W;
+    const sy = (g.maxLat - g.minLat) / H;
+    const c0 = Math.max(0, Math.floor((t.minLon - g.minLon) / sx));
+    const c1 = Math.min(W, Math.ceil((t.maxLon - g.minLon) / sx));
+    const r0 = Math.max(0, Math.floor((g.maxLat - t.maxLat) / sy));
+    const r1 = Math.min(H, Math.ceil((g.maxLat - t.minLat) / sy));
+    for (let r = r0; r < r1; r++) {
+      const lat = g.maxLat - (r + 0.5) * sy;
+      const tr = Math.floor(((t.maxLat - lat) / (t.maxLat - t.minLat)) * h);
+      if (tr < 0 || tr >= h) continue;
+      for (let c = c0; c < c1; c++) {
+        const lon = g.minLon + (c + 0.5) * sx;
+        const tc = Math.floor(((lon - t.minLon) / (t.maxLon - t.minLon)) * w);
+        if (tc < 0 || tc >= w) continue;
+        const v = values[tr * w + tc];
+        if (Number.isFinite(v)) grid.values[r * W + c] = v;
+      }
+    }
   }
 
   /** Shrink a grid to the engine's cell budget, trimming its bbox to match. */
@@ -258,13 +363,29 @@ export function createSiteViewshed(
   }
 
   /**
-   * Height grid for the area, cached per boundary + source + cell budget.
-   * The promise is cached, so a load started while the user is still
-   * choosing the observer spot is reused.
+   * Cells for the area: the engine's budget for a point; for a route or
+   * area, the cell size the engine's work budget affords (workCellM), so a
+   * run stays around a second on the GPU at hand.
+   */
+  function cellBudget(area) {
+    const e = getEngine();
+    if (area.shape.kind === 'point') return e.maxCells;
+    const c = workCellM(area.shape, state.reachM, e.work ?? Infinity);
+    const fit = c ? Math.floor(area.areaM2 / (c * c)) : Infinity;
+    return Math.max(10_000, Math.min(e.maxCellsWide, fit));
+  }
+
+  /**
+   * Height grid for the area, cached per area + source + cell budget. The
+   * promise is cached, so a repeat run with new eye heights reuses it.
    */
   function loadGrid(area, source) {
-    const budget = getEngine().maxCells;
-    const key = `${source}|${budget}|${area.ring.flat().join(',')}`;
+    const budget = cellBudget(area);
+    const b = area.bbox;
+    const box = [b.minLon, b.minLat, b.maxLon, b.maxLat]
+      .map((v) => v.toFixed(6))
+      .join(',');
+    const key = `${source}|${budget}|${state.clip}|${box}`;
     if (gridCache.key !== key) {
       const promise = fetchGrid(area, source, budget);
       gridCache = { key, promise };
@@ -278,24 +399,22 @@ export function createSiteViewshed(
 
   async function fetchGrid(area, source, budget) {
     const t0 = performance.now();
+    const meshOk =
+      hasPhotorealTiles() &&
+      area.areaM2 <= SITE_VIEWSHED_DEFAULTS.meshMaxAreaM2;
     const tries =
       source === 'mesh'
         ? ['mesh']
         : source === 'dem'
           ? ['dem']
-          : [...(hasPhotorealTiles() ? ['mesh'] : []), 'dem', 'terrain'];
+          : [...(meshOk ? ['mesh'] : []), 'dem', 'terrain'];
     const errors = [];
     for (const kind of tries) {
       try {
         let grid;
-        if (kind === 'mesh') {
-          if (!hasPhotorealTiles())
-            throw new Error('needs the Google 3D map source');
-          grid = await loadMesh(area, budget);
-        } else if (kind === 'dem') {
-          say('Loading USGS 3DEP elevation…');
-          grid = fitToBudget(await loadDem(area), budget);
-        } else {
+        if (kind === 'mesh') grid = await loadMesh(area, budget);
+        else if (kind === 'dem') grid = await loadDem(area, budget);
+        else {
           say('Sampling globe terrain…');
           grid = await sampleTerrain(
             lonLatGrid(
@@ -307,15 +426,18 @@ export function createSiteViewshed(
         if (!grid.values.some(Number.isFinite))
           throw new Error('no heights came back');
         grid.kind = kind;
-        grid.mask = new Uint8Array(grid.width * grid.height);
-        for (let r = 0; r < grid.height; r++)
-          for (let c = 0; c < grid.width; c++)
-            grid.mask[r * grid.width + c] = pointInRing(
-              gridToLonLat(grid, c, r),
-              area.ring,
-            )
-              ? 1
-              : 0;
+        grid.mask = null;
+        if (area.ring) {
+          grid.mask = new Uint8Array(grid.width * grid.height);
+          for (let r = 0; r < grid.height; r++)
+            for (let c = 0; c < grid.width; c++)
+              grid.mask[r * grid.width + c] = pointInRing(
+                gridToLonLat(grid, c, r),
+                area.ring,
+              )
+                ? 1
+                : 0;
+        }
         grid.loadMs = performance.now() - t0;
         grid.doneAt = performance.now();
         return grid;
@@ -326,27 +448,73 @@ export function createSiteViewshed(
     throw new Error(`No elevation for the viewshed (${errors.join('; ')})`);
   }
 
-  /** Grid cell nearest a WGS84 lon/lat. */
-  function cellAt(grid, [lon, lat]) {
+  /** Grid cell nearest a WGS84 lon/lat; null outside unless clamped. */
+  function cellAt(grid, [lon, lat], clamp = true) {
     const { bbox, width, height } = grid;
     const dLon = grid.shift?.dLon ?? 0;
     const dLat = grid.shift?.dLat ?? 0;
-    const col =
-      ((lon - dLon - bbox.minLon) / (bbox.maxLon - bbox.minLon)) * width - 0.5;
-    const row =
+    const col = Math.round(
+      ((lon - dLon - bbox.minLon) / (bbox.maxLon - bbox.minLon)) * width - 0.5,
+    );
+    const row = Math.round(
       ((bbox.maxLat - (lat - dLat)) / (bbox.maxLat - bbox.minLat)) * height -
-      0.5;
+        0.5,
+    );
+    if (!clamp && (col < 0 || row < 0 || col >= width || row >= height))
+      return null;
     return {
-      col: Math.min(width - 1, Math.max(0, Math.round(col))),
-      row: Math.min(height - 1, Math.max(0, Math.round(row))),
+      col: Math.min(width - 1, Math.max(0, col)),
+      row: Math.min(height - 1, Math.max(0, row)),
     };
   }
 
   function removeOverlay() {
     if (overlay) scene.groundPrimitives.remove(overlay);
     overlay = null;
-    if (marker) viewer.entities.remove(marker);
-    marker = null;
+  }
+
+  function removeShape() {
+    for (const e of shapeEntities) viewer.entities.remove(e);
+    shapeEntities = [];
+  }
+
+  /** The observer point, route line or area outline on the map. */
+  function drawShape(shape) {
+    removeShape();
+    if (!shape) return;
+    const color = Cesium.Color.fromCssColorString(COLORS.observer);
+    if (shape.kind === 'point')
+      shapeEntities.push(
+        viewer.entities.add({
+          position: Cesium.Cartesian3.fromDegrees(shape.at[0], shape.at[1], 0),
+          point: {
+            pixelSize: 12,
+            color,
+            outlineColor: Cesium.Color.BLACK,
+            outlineWidth: 2,
+            heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          },
+        }),
+      );
+    else
+      shapeEntities.push(
+        viewer.entities.add({
+          polyline: {
+            positions: Cesium.Cartesian3.fromDegreesArray(
+              shapePoints(shape).flat(),
+            ),
+            width: 4,
+            clampToGround: true,
+            material: new Cesium.PolylineOutlineMaterialProperty({
+              color,
+              outlineColor: Cesium.Color.BLACK,
+              outlineWidth: 1,
+            }),
+          },
+        }),
+      );
+    governorRequestRender('site-viewshed');
   }
 
   /**
@@ -438,12 +606,11 @@ export function createSiteViewshed(
     scene.groundPrimitives.add(overlay);
   }
 
-  function draw(grid, vis, observer, banded) {
+  function draw(grid, vis, banded) {
     removeOverlay();
     if (Cesium.GroundPrimitive.supportsMaterials(scene))
       drawImage(grid, vis, banded);
     else drawStrips(grid, vis);
-    drawMarker(observer);
     governorRequestRender('site-viewshed');
   }
 
@@ -489,30 +656,34 @@ export function createSiteViewshed(
     }
   }
 
-  function drawMarker(observer) {
-    marker = viewer.entities.add({
-      position: Cesium.Cartesian3.fromDegrees(observer[0], observer[1], 0),
-      point: {
-        pixelSize: 12,
-        color: Cesium.Color.fromCssColorString(COLORS.observer),
-        outlineColor: Cesium.Color.BLACK,
-        outlineWidth: 2,
-        heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
-        disableDepthTestDistance: Number.POSITIVE_INFINITY,
-      },
-    });
-  }
-
-  function applyOptions({ lowM, highM, eyeM, targetM, source, gpu } = {}) {
+  function applyOptions({
+    lowM,
+    highM,
+    eyeM,
+    targetM,
+    source,
+    gpu,
+    reachM,
+    clip,
+  } = {}) {
     if (eyeM != null && lowM == null && highM == null) lowM = highM = eyeM;
     const lo = lowM != null ? Number(lowM) : state.lowM;
     const hi = highM != null ? Number(highM) : lowM != null ? lo : state.highM;
     if (!(lo >= 0) || !(hi >= 0)) throw new Error('Eye heights must be ≥ 0 m');
+    if (reachM != null) {
+      const r = Number(reachM);
+      if (!(r >= 10) || r > SHAPE_LIMITS.maxReachM)
+        throw new Error(
+          `Reach must be 10 m to ${SHAPE_LIMITS.maxReachM / 1000} km`,
+        );
+      state.reachM = r;
+    }
     state.lowM = Math.min(lo, hi);
     state.highM = Math.max(lo, hi);
     if (targetM != null && Number.isFinite(Number(targetM)))
       state.targetM = Number(targetM);
     if (source) state.source = source;
+    if (clip != null) state.clip = Boolean(clip);
     if (gpu && gpu !== state.gpu) {
       state.gpu = gpu;
       engine?.setMode(gpu);
@@ -520,75 +691,127 @@ export function createSiteViewshed(
     }
   }
 
+  /** Set the observer shape (point, route or area) without computing. */
+  function setShape(shape) {
+    state.shape = shape ? normalizeShape(shape) : null;
+    state.result = null;
+    state.on = false;
+    removeOverlay();
+    drawShape(state.shape);
+    emit();
+    return describe();
+  }
+
   /**
-   * Compute and draw the viewshed from `at` ([lon, lat]; default: the last
-   * observer). Options persist for the next run. `eyeM` sets one height;
-   * `lowM`/`highM` set the band.
+   * Compute and draw the viewshed. `at` ([lon, lat]) or `shape` replaces
+   * the observer shape; without either, the last shape is used. Options
+   * persist for the next run. `eyeM` sets one height; `lowM`/`highM` set the
+   * band; `reachM` how far to look; `clip` keeps it inside the SITE
+   * boundary.
    */
-  async function compute({ at, ...options } = {}) {
-    const area = requireArea();
+  async function compute({ at, shape, ...options } = {}) {
     applyOptions(options);
-    const observer = at ?? state.observer;
-    if (!observer) throw new Error('Place an observer first.');
-    if (!pointInRing(observer, area.ring))
-      throw new Error('Put the observer inside the site boundary.');
+    if (at) setShape({ kind: 'point', at });
+    else if (shape) setShape(shape);
+    const current = state.shape;
+    if (!current)
+      throw new Error('Pick a point, route or area for the observer first.');
+    const area = analysisArea(current);
     const id = ++run;
-    state.observer = observer;
     state.loading = true;
     state.error = null;
     emit();
     try {
       const t0 = performance.now();
       const grid = await loadGrid(area, state.source);
-      // Heights that finished loading before this run (cached, or fetched
-      // while the user was picking the spot) cost this run nothing.
+      // Heights that finished loading before this run (cached from an
+      // earlier run) cost this run nothing.
       const heightsCached = grid.doneAt <= t0;
       if (id !== run) return describe();
-      say(`Tracing sight lines on the ${getEngine().kind}…`);
-      await new Promise((r) => setTimeout(r, 0)); // let the status paint
       const { pxEastM: cellXM, pxSouthM: cellYM } = gridPixelMetres(grid);
-      const cell = cellAt(grid, observer);
+      const cellM = Math.sqrt(cellXM * cellYM);
+      // As many observers as the engine affords at this reach (each one
+      // walks every cell within it), never closer than two cells.
+      const { points, spacingM } = shapeObservers(
+        current,
+        2 * cellM,
+        affordableObservers(getEngine().work ?? Infinity, state.reachM / cellM),
+      );
+      const seen = new Set();
+      const observers = [];
+      for (const p of points) {
+        const c = cellAt(grid, p, false);
+        if (!c) continue;
+        const key = c.row * grid.width + c.col;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        observers.push(c);
+      }
+      if (!observers.length)
+        throw new Error('The shape is outside the height grid.');
+      const multi = current.kind !== 'point';
+      say(
+        `Tracing sight lines${multi ? ` from ${observers.length} observers` : ''} on the ${getEngine().kind}…`,
+      );
+      await new Promise((r) => setTimeout(r, 0)); // let the status paint
       const banded = state.highM > state.lowM;
-      const {
-        codes,
-        engine: used,
-        ms,
-      } = await getEngine().compute({
+      const input = {
         heights: grid.values,
         width: grid.width,
         height: grid.height,
         cellXM,
         cellYM,
-        observer: cell,
         lowM: state.lowM,
         highM: state.highM,
         targetM: state.targetM,
         mask: grid.mask,
-      });
+        maxDistM: state.reachM,
+        ...(multi ? { observers } : { observer: observers[0] }),
+      };
+      const {
+        codes,
+        engine: usedEngine,
+        ms,
+        used,
+      } = await getEngine().compute(input);
       if (id !== run) return describe();
-      const stats = bandStats(codes, grid.width, cellXM, cellYM, cell);
+      if (multi && used === 0)
+        throw new Error('No heights under the route or area.');
+      const first = observers[0];
+      const stats = bandStats(codes, grid.width, cellXM, cellYM, first);
       const cellArea = cellXM * cellYM;
+      const info = describeShape(current);
       state.result = {
         ...stats,
+        farthestHighM: multi ? null : stats.farthestHighM,
+        farthestLowM: multi ? null : stats.farthestLowM,
+        kind: current.kind,
+        shapeLabel: KIND_LABEL[current.kind],
+        lengthM: Math.round(info.lengthM),
+        shapeAreaM2: Math.round(info.areaM2),
+        observers: multi ? (used ?? observers.length) : 1,
+        spacingM: Math.round(spacingM),
+        reachM: state.reachM,
+        clip: state.clip,
         banded,
         lowM: state.lowM,
         highM: state.highM,
         bothM2: Math.round(stats.both * cellArea),
         highOnlyM2: Math.round(stats.highOnly * cellArea),
         hiddenM2: Math.round(stats.hidden * cellArea),
-        cellM: Math.round(Math.sqrt(cellArea) * 10) / 10,
+        cellM: Math.round(cellM * 10) / 10,
         cells: grid.width * grid.height,
         source: grid.kind,
         sourceLabel: SOURCE_LABEL[grid.kind],
         observerGroundM:
-          Math.round(grid.values[cell.row * grid.width + cell.col] * 10) / 10,
-        observer: [...observer],
-        engine: used,
+          Math.round(grid.values[first.row * grid.width + first.col] * 10) / 10,
+        observer: current.kind === 'point' ? [...current.at] : null,
+        engine: usedEngine,
         heightsMs: Math.round(grid.loadMs),
         heightsCached,
         computeMs: Math.round(ms),
       };
-      draw(grid, codes, observer, banded);
+      draw(grid, codes, banded);
       state.on = true;
       return describe();
     } catch (error) {
@@ -603,61 +826,84 @@ export function createSiteViewshed(
     }
   }
 
-  /** Click the map to place (or move) the observer, then compute. */
-  function pickObserver(options = {}) {
-    requireArea();
+  /**
+   * Draw the observer shape on the map ('point', 'line' for a route,
+   * 'area', or 'circle' with an optional `radiusM`), then compute.
+   * Resolves to the result, or null when cancelled.
+   */
+  async function pickShape(kind, { radiusM = null, onHint, ...options } = {}) {
     stopPicking();
-    state.picking = true;
     state.error = null;
     applyOptions(options);
-    // Start loading heights now, while the user picks the spot; not the
-    // mesh, whose snapshot moves the camera.
-    const meshFirst =
-      state.source === 'mesh' ||
-      (state.source === 'auto' && hasPhotorealTiles());
-    if (!meshFirst) loadGrid(requireArea(), state.source).catch(() => {});
+    state.picking = kind;
     emit();
-    return new Promise((resolve, reject) => {
-      handler = new Cesium.ScreenSpaceEventHandler(scene.canvas);
-      const onKey = (event) => {
-        if (event.key === 'Escape') finish(null);
-      };
-      const finish = (value) => {
-        stopPicking();
-        resolve(value);
-      };
-      cancelPick = () => {
-        window.removeEventListener('keydown', onKey, true);
-        cancelPick = null;
-      };
-      window.addEventListener('keydown', onKey, true);
-      handler.setInputAction((event) => {
-        const p = boundary.pickLonLat?.(event.position);
-        if (!p) return;
-        stopPicking();
-        compute({ ...options, at: p }).then(resolve, reject);
-      }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
-    });
+    try {
+      picker = pickShapeImpl(viewer, {
+        kind,
+        radiusM,
+        snapDeg: boundary?.snapDeg ?? 15,
+        onHint: (text) => {
+          onHint?.(text);
+          say(text);
+        },
+        pickLonLat: boundary?.pickLonLat,
+      });
+    } catch (error) {
+      state.picking = null;
+      emit();
+      throw error;
+    }
+    const shape = await picker.done;
+    picker = null;
+    state.picking = null;
+    state.progress = '';
+    emit();
+    if (!shape) return null;
+    return compute({ shape });
+  }
+
+  /** Click the map to place (or move) a single observer, then compute. */
+  function pickObserver(options = {}) {
+    return pickShape('point', options);
+  }
+
+  /** Finish the shape being drawn (Enter / double-click equivalent). */
+  function finishPicking() {
+    picker?.finish();
   }
 
   function stopPicking() {
-    handler?.destroy();
-    handler = null;
-    cancelPick?.();
+    picker?.cancel();
+    picker = null;
     if (state.picking) {
-      state.picking = false;
+      state.picking = null;
+      state.progress = '';
       emit();
     }
+  }
+
+  /** Use the SITE boundary (a park's KML, say) as the observer area. */
+  function useSiteBoundary(options = {}) {
+    const site = boundary?.site;
+    if (!site)
+      throw new Error(
+        'No SITE boundary yet: import, paste or draw one in SITE.',
+      );
+    return compute({
+      ...options,
+      shape: { kind: 'area', ring: site.boundary },
+    });
   }
 
   function clear() {
     run++;
     stopPicking();
     removeOverlay();
+    removeShape();
     state.on = false;
     state.loading = false;
     state.result = null;
-    state.observer = null;
+    state.shape = null;
     state.error = null;
     governorRequestRender('site-viewshed');
     emit();
@@ -670,10 +916,33 @@ export function createSiteViewshed(
 
   /** Distance from the observer to a point, for dossier-style readouts. */
   function distanceTo(point) {
-    return state.observer ? haversineMeters(state.observer, point) : null;
+    return state.shape?.kind === 'point'
+      ? haversineMeters(state.shape.at, point)
+      : null;
+  }
+
+  /**
+   * What the orbit circles: the shape and its reach, in the form the SITE
+   * orbit reads from a boundary.
+   */
+  function orbitTarget() {
+    if (!state.shape) throw new Error('Pick a point, route or area first.');
+    const info = describeShape(state.shape);
+    return {
+      name: `Viewshed · ${KIND_LABEL[state.shape.kind]}`,
+      center: { lon: info.center[0], lat: info.center[1] },
+      groundM: Number.isFinite(state.result?.observerGroundM)
+        ? state.result.observerGroundM
+        : 0,
+      radiusM: Math.max(150, info.radiusM + Math.min(state.reachM, 1500) * 0.6),
+      points: [],
+      pointPositions: [],
+    };
   }
 
   function describe() {
+    const shape = state.shape;
+    const info = shape ? describeShape(shape) : null;
     return {
       on: state.on,
       loading: state.loading,
@@ -684,31 +953,49 @@ export function createSiteViewshed(
       highM: state.highM,
       eyeM: state.highM,
       targetM: state.targetM,
+      reachM: state.reachM,
+      clip: state.clip,
       source: state.source,
       gpu: state.gpu,
       // The engine (a tiny WebGL context) is made on first look, so the
-      // tray can flag an integrated GPU before anything is computed.
+      // tab can flag an integrated GPU before anything is computed.
       engine: getEngine().kind,
       renderer: getEngine().renderer,
       gpuKind: getEngine().gpuKind,
-      observer: state.observer ? [...state.observer] : null,
+      shape: shape
+        ? {
+            kind: shape.kind,
+            label: KIND_LABEL[shape.kind],
+            lengthM: Math.round(info.lengthM),
+            areaM2: Math.round(info.areaM2),
+            points: shapePoints(shape).length,
+            radiusM: shape.circle ? Math.round(shape.circle.radiusM) : null,
+          }
+        : null,
+      observer: shape?.kind === 'point' ? [...shape.at] : null,
+      hasSite: Boolean(boundary?.site),
       result: state.result ? { ...state.result } : null,
     };
   }
 
   const offBoundary = boundary?.onChange?.(() => {
-    gridCache = { key: null, promise: null };
-    if (!boundary.site && (state.on || state.picking)) clear();
+    if (state.clip) gridCache = { key: null, promise: null };
+    emit();
   });
 
   return {
     describe,
     compute,
+    setShape,
+    pickShape,
     pickObserver,
+    finishPicking,
     stopPicking,
+    useSiteBoundary,
     clear,
     setOptions,
     distanceTo,
+    orbitTarget,
     onChange(fn) {
       listeners.add(fn);
       return () => listeners.delete(fn);

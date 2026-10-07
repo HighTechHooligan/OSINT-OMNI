@@ -134,3 +134,12 @@ test('integrated or software GPUs get steps to reach the dedicated one', async (
   assert.equal(dedicatedGpuAdvice('dedicated', 'RTX 4070', 'Win32'), null);
   assert.equal(dedicatedGpuAdvice('unified', 'Apple M2', 'MacIntel'), null);
 });
+
+test('observer budget shrinks with the cube of the reach', async () => {
+  const { affordableObservers, ENGINE_WORK } =
+    await import('./viewshedEngine.js');
+  assert.equal(affordableObservers(ENGINE_WORK.gpu, 40), 2000); // long drive, coarse cells
+  const near = affordableObservers(ENGINE_WORK.gpu, 333); // 1 km at 3 m
+  assert.ok(near > 200 && near < 400, String(near));
+  assert.equal(affordableObservers(ENGINE_WORK.cpu, 5000), 8); // never below 8
+});

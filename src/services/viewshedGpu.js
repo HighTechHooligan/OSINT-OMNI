@@ -9,7 +9,7 @@
  * from createGpuViewshed() where WebGL2 is unavailable; callers fall back to
  * the CPU workers.
  */
-import { BAND, curveFactor } from './viewshedMath.js';
+import { BAND, curveFactor, reachWindow } from './viewshedMath.js';
 
 const VERT = `#version 300 es
 in vec2 pos;
@@ -28,6 +28,7 @@ uniform float eyeLo;
 uniform float eyeHi;
 uniform float targetM;
 uniform float curve;
+uniform float maxDist;           // reach in metres; cells beyond stay 0
 out vec4 code;
 
 float h(ivec2 p) { return texelFetch(heights, p, 0).r; }
@@ -38,6 +39,7 @@ void main() {
   if (texelFetch(mask, p, 0).r == 0u || isnan(hp)) { code = vec4(0.0); return; }
   ivec2 dlt = p - observer;
   float dist = length(vec2(dlt) * cell);
+  if (dist > maxDist) { code = vec4(0.0); return; }
   if (dist == 0.0) { code = vec4(${BAND.BOTH}.0 / 255.0); return; }
   int steps = max(abs(dlt.x), abs(dlt.y));
   float maxLo = -1e30;
@@ -192,8 +194,12 @@ export function createGpuViewshed({
   }
 
   /**
-   * Same inputs as computeViewshedBand (rows ignored). Row 0 of the grid is
-   * texture row 0, so no flipping is needed on the way in or out.
+   * Same inputs as computeViewshedBand (rows ignored), or as
+   * computeViewshedMulti with `observers`. Row 0 of the grid is texture row
+   * 0, so no flipping is needed on the way in or out. Many observers draw
+   * into one target with MAX blending (BAND codes are ordered), each over
+   * only the cells within its reach, and come back in one readPixels.
+   * @returns {Uint8Array} BAND codes (`.used` = observers that had ground)
    */
   function compute({
     heights,
@@ -202,21 +208,25 @@ export function createGpuViewshed({
     cellXM,
     cellYM,
     observer,
+    observers = [observer],
     lowM,
     highM = lowM,
     targetM = 0,
     refraction,
     mask = null,
+    maxDistM = Infinity,
   }) {
     if (width > maxSide || height > maxSide)
       throw new RangeError(`grid larger than ${maxSide} px`);
-    const oc = Math.round(observer.col);
-    const or = Math.round(observer.row);
-    const ground = heights[or * width + oc];
-    if (!Number.isFinite(ground))
-      throw new RangeError('No height under the observer');
-    canvas.width = width;
-    canvas.height = height;
+    const single = observers.length === 1 && observers[0] === observer;
+    if (single) {
+      const g =
+        heights[Math.round(observer.row) * width + Math.round(observer.col)];
+      if (!Number.isFinite(g))
+        throw new RangeError('No height under the observer');
+    }
+    canvas.width = Math.min(width, 16);
+    canvas.height = Math.min(height, 16);
     gl.viewport(0, 0, width, height);
     const h32 =
       heights instanceof Float32Array ? heights : Float32Array.from(heights);
@@ -253,29 +263,53 @@ export function createGpuViewshed({
       outTex,
       0,
     );
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
     gl.useProgram(program);
     gl.uniform1i(loc('heights'), 0);
     gl.uniform1i(loc('mask'), 1);
     gl.uniform2i(loc('size'), width, height);
-    gl.uniform2i(loc('observer'), oc, or);
     gl.uniform2f(loc('cell'), cellXM, cellYM);
-    gl.uniform1f(loc('eyeLo'), ground + lowM);
-    gl.uniform1f(loc('eyeHi'), ground + highM);
     gl.uniform1f(loc('targetM'), targetM);
     gl.uniform1f(loc('curve'), curveFactor(refraction));
+    gl.uniform1f(loc('maxDist'), Number.isFinite(maxDistM) ? maxDistM : 3.0e38);
     const posLoc = gl.getAttribLocation(program, 'pos');
     gl.bindBuffer(gl.ARRAY_BUFFER, quad);
     gl.enableVertexAttribArray(posLoc);
     gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
-    // Draw in bands of rows: each draw stays short, so a slow GPU never
-    // trips the driver's watchdog on a big grid.
+    gl.enable(gl.BLEND);
+    gl.blendEquation(gl.MAX);
+    gl.blendFunc(gl.ONE, gl.ONE);
     gl.enable(gl.SCISSOR_TEST);
-    const band = Math.max(1, Math.floor(262_144 / width));
-    for (let y = 0; y < height; y += band) {
-      gl.scissor(0, y, width, Math.min(band, height - y));
-      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    let used = 0;
+    for (const o of observers) {
+      const oc = Math.round(o.col);
+      const or = Math.round(o.row);
+      const ground = heights[or * width + oc];
+      if (!Number.isFinite(ground)) continue;
+      used++;
+      gl.uniform2i(loc('observer'), oc, or);
+      gl.uniform1f(loc('eyeLo'), ground + lowM);
+      gl.uniform1f(loc('eyeHi'), ground + highM);
+      const [r0, r1, c0, c1] = reachWindow(
+        o,
+        maxDistM,
+        width,
+        height,
+        cellXM,
+        cellYM,
+      );
+      // Draw in bands of rows: each draw stays short, so a slow GPU never
+      // trips the driver's watchdog on a big grid.
+      const band = Math.max(1, Math.floor(262_144 / (c1 - c0)));
+      for (let y = r0; y < r1; y += band) {
+        gl.scissor(c0, y, c1 - c0, Math.min(band, r1 - y));
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      }
+      if (used % 64 === 0) gl.flush();
     }
     gl.disable(gl.SCISSOR_TEST);
+    gl.disable(gl.BLEND);
     const rgba = new Uint8Array(width * height * 4);
     gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -283,6 +317,7 @@ export function createGpuViewshed({
     for (const t of [hTex, mTex, outTex]) gl.deleteTexture(t);
     const codes = new Uint8Array(width * height);
     for (let i = 0; i < codes.length; i++) codes[i] = rgba[i * 4];
+    codes.used = used;
     return codes;
   }
 

@@ -7,14 +7,35 @@
  *  3. Inline on the main thread (tests, or no Worker support).
  * All three return the same BAND codes.
  */
-import { computeViewshedBand } from './viewshedMath.js';
+import { computeViewshedBand, computeViewshedMulti } from './viewshedMath.js';
 import { createGpuViewshed, gpuClass } from './viewshedGpu.js';
 
 /** Grid budgets: how many cells each engine handles comfortably in < 1 s. */
 export const ENGINE_MAX_CELLS = Object.freeze({
   gpu: 1_000_000,
   cpu: 250_000,
+  // Routes and areas: each observer only walks the cells within its reach,
+  // so a long corridor can use a bigger grid.
+  gpuWide: 4_000_000,
+  cpuWide: 250_000,
 });
+
+/**
+ * Sight-line steps (texel reads) each engine gets through in about a second
+ * for a route or area. One observer with a reach of r cells costs about
+ * π·r³/2 steps, so this sets how many observers a run can afford.
+ */
+export const ENGINE_WORK = Object.freeze({
+  gpu: 1.5e10, // dedicated
+  integrated: 4e9,
+  cpu: 5e8, // worker pool, or a software GPU
+});
+
+/** Observers a run can afford with a reach of `reachCells` grid cells. */
+export function affordableObservers(work, reachCells) {
+  const per = (Math.PI * Math.max(1, reachCells) ** 3) / 2;
+  return Math.max(8, Math.min(2000, Math.floor(work / per)));
+}
 
 /** GPU choices offered in the UI, mapped to WebGL power preferences. */
 export const GPU_MODES = Object.freeze({
@@ -79,7 +100,35 @@ export function createViewshedEngine({
     });
   }
 
+  async function onCpuMulti(input) {
+    const list = getPool();
+    if (!list.length) {
+      const { codes, used } = computeViewshedMulti(input);
+      return { codes, used, engine: 'CPU' };
+    }
+    const per = Math.ceil(input.observers.length / list.length);
+    const parts = await Promise.all(
+      list.map((worker, k) => {
+        const share = input.observers.slice(k * per, (k + 1) * per);
+        return share.length
+          ? runWorker(worker, { ...input, observers: share })
+          : null;
+      }),
+    );
+    const codes = new Uint8Array(input.width * input.height);
+    let used = 0;
+    for (const part of parts) {
+      if (!part) continue;
+      used += part.used;
+      const c = part.codes;
+      for (let i = 0; i < codes.length; i++)
+        if (c[i] > codes[i]) codes[i] = c[i];
+    }
+    return { codes, used, engine: `CPU ×${list.length}` };
+  }
+
   async function onCpu(input) {
+    if (input.observers) return onCpuMulti(input);
     const list = getPool();
     if (!list.length)
       return { codes: computeViewshedBand(input), engine: 'CPU' };
@@ -110,6 +159,7 @@ export function createViewshedEngine({
         const codes = g.compute(input);
         return {
           codes,
+          used: codes.used,
           engine: `GPU (${g.renderer})`,
           ms: performance.now() - t0,
         };
@@ -128,6 +178,20 @@ export function createViewshedEngine({
     /** Cell budget for the engine compute() will use. */
     get maxCells() {
       return getGpu() ? ENGINE_MAX_CELLS.gpu : ENGINE_MAX_CELLS.cpu;
+    },
+    /** Sight-line steps per run for routes and areas (see ENGINE_WORK). */
+    get work() {
+      const g = getGpu();
+      const kind = g ? gpuClass(g.renderer) : 'cpu';
+      if (kind === 'integrated' || kind === 'unified')
+        return ENGINE_WORK.integrated;
+      return kind === 'software' || kind === 'cpu'
+        ? ENGINE_WORK.cpu
+        : ENGINE_WORK.gpu;
+    },
+    /** Cell budget for routes and areas (reach-limited observers). */
+    get maxCellsWide() {
+      return getGpu() ? ENGINE_MAX_CELLS.gpuWide : ENGINE_MAX_CELLS.cpuWide;
     },
     get kind() {
       return getGpu() ? 'GPU' : 'CPU';

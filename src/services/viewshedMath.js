@@ -159,7 +159,7 @@ export function parseHeightM(text) {
  * walk, two running horizons). A cell visible from the low eye is always
  * visible from the high one, so each cell gets one BAND code. `rows`
  * limits the work to [r0, r1) so a worker pool can split the grid; cells
- * outside it stay NONE.
+ * outside it stay NONE. Cells farther than `maxDistM` stay NONE too.
  * @returns {Uint8Array} BAND codes
  */
 export function computeViewshedBand({
@@ -174,24 +174,48 @@ export function computeViewshedBand({
   targetM = VIEWSHED_DEFAULTS.targetM,
   refraction = VIEWSHED_DEFAULTS.refraction,
   mask = null,
+  maxDistM = Infinity,
   rows = [0, height],
   out = new Uint8Array(width * height),
 }) {
+  const ground =
+    heights[Math.round(observer.row) * width + Math.round(observer.col)];
+  if (!Number.isFinite(ground))
+    throw new RangeError('No height under the observer');
+  bandInto(
+    { heights, width, cellXM, cellYM, lowM, highM, targetM, refraction, mask },
+    observer,
+    maxDistM,
+    [rows[0], rows[1], 0, width],
+    out,
+    false,
+  );
+  return out;
+}
+
+/**
+ * One observer's band codes over the window [r0, r1) × [c0, c1), written
+ * into `out`; with `merge`, a cell keeps the best code any observer gave
+ * it (BAND codes are ordered: seen from low > high only > hidden).
+ */
+function bandInto(g, observer, maxDistM, [r0, r1, c0, c1], out, merge) {
+  const { heights, width, cellXM, cellYM, mask } = g;
   const oc = Math.round(observer.col);
   const or = Math.round(observer.row);
   const ground = heights[or * width + oc];
-  if (!Number.isFinite(ground))
-    throw new RangeError('No height under the observer');
-  const eyeLo = ground + lowM;
-  const eyeHi = ground + highM;
-  const curve = curveFactor(refraction);
-  for (let r = rows[0]; r < rows[1]; r++)
-    for (let c = 0; c < width; c++) {
+  if (!Number.isFinite(ground)) return false;
+  const eyeLo = ground + g.lowM;
+  const eyeHi = ground + (g.highM ?? g.lowM);
+  const targetM = g.targetM ?? VIEWSHED_DEFAULTS.targetM;
+  const curve = curveFactor(g.refraction);
+  for (let r = r0; r < r1; r++)
+    for (let c = c0; c < c1; c++) {
       const i = r * width + c;
       if (mask && !mask[i]) continue;
       const h = heights[i];
       if (!Number.isFinite(h)) continue;
       const dist = Math.hypot((c - oc) * cellXM, (r - or) * cellYM);
+      if (dist > maxDistM) continue;
       if (dist === 0) {
         out[i] = BAND.BOTH;
         continue;
@@ -215,14 +239,75 @@ export function computeViewshedBand({
         if (hi > maxHi) maxHi = hi;
       }
       const tz = h + targetM - dist * dist * curve;
-      out[i] =
+      const code =
         (tz - eyeLo) / dist >= maxLo
           ? BAND.BOTH
           : (tz - eyeHi) / dist >= maxHi
             ? BAND.HIGH_ONLY
             : BAND.HIDDEN;
+      if (!merge || code > out[i]) out[i] = code;
     }
-  return out;
+  return true;
+}
+
+/**
+ * Grid window [r0, r1, c0, c1) holding every cell within `maxDistM` of an
+ * observer (the whole grid when the reach is unlimited).
+ */
+export function reachWindow(observer, maxDistM, width, height, cellXM, cellYM) {
+  if (!Number.isFinite(maxDistM)) return [0, height, 0, width];
+  const oc = Math.round(observer.col);
+  const or = Math.round(observer.row);
+  const dc = Math.ceil(maxDistM / cellXM);
+  const dr = Math.ceil(maxDistM / cellYM);
+  return [
+    Math.max(0, or - dr),
+    Math.min(height, or + dr + 1),
+    Math.max(0, oc - dc),
+    Math.min(width, oc + dc + 1),
+  ];
+}
+
+/**
+ * Viewshed of many observers (points along a route, or spread over an
+ * area): a cell takes the best code any observer within `maxDistM` gives
+ * it, so green = seen from the low eye somewhere along the shape. Each
+ * observer only walks the cells within its reach. Observers over missing
+ * heights are skipped.
+ * @returns {{ codes: Uint8Array, used: number }}
+ */
+export function computeViewshedMulti({
+  heights,
+  width,
+  height,
+  cellXM,
+  cellYM,
+  observers,
+  lowM = VIEWSHED_DEFAULTS.eyeM,
+  highM = lowM,
+  targetM = VIEWSHED_DEFAULTS.targetM,
+  refraction = VIEWSHED_DEFAULTS.refraction,
+  mask = null,
+  maxDistM = Infinity,
+  out = new Uint8Array(width * height),
+}) {
+  const g = {
+    heights,
+    width,
+    cellXM,
+    cellYM,
+    lowM,
+    highM,
+    targetM,
+    refraction,
+    mask,
+  };
+  let used = 0;
+  for (const o of observers) {
+    const win = reachWindow(o, maxDistM, width, height, cellXM, cellYM);
+    if (bandInto(g, o, maxDistM, win, out, true)) used++;
+  }
+  return { codes: out, used };
 }
 
 /** Counts, shares and farthest visible distance for a BAND grid. */
