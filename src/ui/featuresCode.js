@@ -9,7 +9,7 @@ import { normalizeDatum } from '../services/contourMath.js';
 import { describeRow as describeAirspace } from '../layers/airspace/records.js';
 
 import { parseLength } from '../services/surveyGeometry.js';
-import { parseHeightM } from '../services/viewshedMath.js';
+import { parseHeightM, parseHeightRange } from '../services/viewshedMath.js';
 import { openCoordinatePaste } from './coordinatePaste.js';
 
 export const FEATURES_CODE_HELP = `Every feature here is also in the SITE panel in the dock.
@@ -39,10 +39,12 @@ Buildings (only inside the site boundary)
   buildings list           list what building mode found
   panels close             close every pop-out panel
 Viewshed (only inside the site boundary)
-  viewshed [eye]           click the observer spot; eye height (1.7 m, 30 ft)
+  viewshed [eye]           click the observer spot; eye height (1.7m, 30ft)
+                           or a band (1-2.5m: green = low eye, amber = high only)
   viewshed <lat,lon> [eye] [target]  observer at lat,lon; target 0 = ground
   viewshed mesh | dem | auto  heights: 3D mesh (buildings + trees block),
                            USGS bare earth, or auto (mesh when it is on)
+  viewshed gpu dedicated | integrated | cpu  which processor runs it
   viewshed off             clear the viewshed
 Aircraft (or double-click a plane on the globe)
   plane [callsign|tail|hex]  ride in its cockpit and open its details;
@@ -164,8 +166,12 @@ export function createFeatureCommands({
   function viewshedLine(state) {
     const r = state.result;
     if (!r) return print('No viewshed', 'err');
+    const eyes = r.banded
+      ? `${r.lowPct}% of the site seen from ${r.lowM} m, ${r.highPct}% from ${r.highM} m`
+      : `${r.highPct}% of the site visible from ${r.highM} m`;
+    const secs = (ms) => `${(ms / 1000).toFixed(2)} s`;
     print(
-      `Viewshed: ${r.visiblePct}% of the site visible from ${state.eyeM.toFixed(1)} m eye height (target ${state.targetM.toFixed(1)} m) · farthest ${r.farthestVisibleM} m · ${r.sourceLabel}, ${r.cellM} m cells`,
+      `Viewshed: ${eyes} (target ${state.targetM} m) · farthest ${r.farthestHighM} m · ${r.sourceLabel}, ${r.cellM} m cells · heights ${r.heightsCached ? 'ready' : secs(r.heightsMs)}, sight lines ${secs(r.computeMs)} on ${r.engine}`,
       'ok',
     );
   }
@@ -474,6 +480,18 @@ export function createFeatureCommands({
         viewshed.clear();
         return print('Viewshed cleared', 'ok');
       }
+      if (first === 'gpu') {
+        const mode = rest[0];
+        if (!['dedicated', 'integrated', 'cpu'].includes(mode))
+          return print(
+            `Computing on: ${viewshed.describe().gpu}. Usage: viewshed gpu dedicated|integrated|cpu`,
+            'dim',
+          );
+        viewshed.setOptions({ gpu: mode });
+        if (!viewshed.describe().observer)
+          return print(`Viewshed will compute on: ${mode}`, 'ok');
+        return viewshedLine(await viewshed.compute());
+      }
       if (['mesh', 'dem', 'auto'].includes(first)) {
         viewshed.setOptions({ source: first });
         if (!viewshed.describe().observer)
@@ -493,16 +511,17 @@ export function createFeatureCommands({
         heights = rest;
       }
       const [eyeText, targetText] = heights;
-      const eyeM = eyeText != null ? parseHeightM(eyeText) : undefined;
+      const eye = eyeText != null ? parseHeightRange(eyeText) : undefined;
       const targetM = targetText != null ? parseHeightM(targetText) : undefined;
-      if (eyeM === null || targetM === null)
-        return print('Heights like 1.7, 10m or 30ft', 'err');
+      if (eye === null || targetM === null)
+        return print('Eye like 1.7, 10m, 30ft or a band like 1-2.5m', 'err');
+      const opts = { lowM: eye?.lowM, highM: eye?.highM, targetM };
       if (at) {
         print('Tracing sight lines…', 'dim');
-        return viewshedLine(await viewshed.compute({ at, eyeM, targetM }));
+        return viewshedLine(await viewshed.compute({ at, ...opts }));
       }
       print('Click the observer spot inside the boundary. Esc cancels.', 'dim');
-      const state = await viewshed.pickObserver({ eyeM, targetM });
+      const state = await viewshed.pickObserver(opts);
       return state ? viewshedLine(state) : print('Cancelled', 'dim');
     },
     dossier([n]) {
