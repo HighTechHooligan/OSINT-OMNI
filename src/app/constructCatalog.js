@@ -24,6 +24,7 @@ import { createApplicationAwareness } from './layers/militaryAwareness.js';
 import { createApplicationFirms } from './layers/firms.js';
 import { createApplicationEarthquakes } from './layers/earthquakes.js';
 import { createApplicationOsmStreets } from './layers/osmStreets.js';
+import { createApplicationWindTurbines } from './layers/windTurbines.js';
 import { createApplicationFirePerimeters } from './layers/perimeters.js';
 import { createApplicationCables } from './layers/submarineCables.js';
 import { createInfrastructureLayers } from '../data/infrastructure.js';
@@ -66,6 +67,7 @@ export const LOCAL_ONLY_LAYER_METADATA = Object.freeze([
   Object.freeze({ id: 'local-adsb', disposition: 'local-only' }),
   // OSINT OMNI basemap helper: kept out of share links for now (no published token).
   Object.freeze({ id: 'osm-streets', disposition: 'local-only' }),
+  Object.freeze({ id: 'wind-turbines', disposition: 'local-only' }),
 ]);
 
 /** Serialization metadata for every layer the application catalog constructs. */
@@ -160,6 +162,7 @@ export function createApplicationCatalog({
         createApplicationBikeshare({ source: sources.bikeshare }),
         createApplicationDirections(),
         createApplicationOsmStreets(),
+        createApplicationWindTurbines(),
         createApplicationRecentImagery(),
         vessels,
         installations,
