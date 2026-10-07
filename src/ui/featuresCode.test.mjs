@@ -20,6 +20,7 @@ function fakeSite() {
   let loaded = false;
   const contourState = {
     intervalFt: 10,
+    datum: 'asl',
     contoursOn: false,
     canopyOn: false,
     stats: null,
@@ -65,13 +66,19 @@ function fakeSite() {
   };
   const contours = {
     describe: () => ({ ...contourState }),
-    showContours: async () => {
+    showContours: async ({ intervalFt, datum } = {}) => {
+      if (intervalFt !== undefined)
+        contourState.intervalFt = Math.min(100, Math.max(2, intervalFt));
+      if (datum) contourState.datum = datum;
       calls.push(['showContours', contourState.intervalFt]);
       contourState.contoursOn = true;
+      const rel = contourState.datum === 'relative';
       contourState.stats = {
         lines: 120,
-        minFt: 840,
-        maxFt: 1010,
+        datum: contourState.datum,
+        baseFt: 840,
+        minFt: rel ? 0 : 840,
+        maxFt: rel ? 170 : 1010,
         resM: 1,
         cached: false,
       };
@@ -80,6 +87,11 @@ function fakeSite() {
     hideContours: () => {
       calls.push(['hideContours']);
       contourState.contoursOn = false;
+    },
+    setDatum: async (datum) => {
+      contourState.datum = datum;
+      calls.push(['setDatum', datum]);
+      return { ...contourState };
     },
     setContourInterval: async (ft) => {
       contourState.intervalFt = Math.min(100, Math.max(2, Math.round(ft)));
@@ -195,12 +207,38 @@ test('contour interval is a variable: contour <ft> and set contour <ft>', async 
   assert.deepEqual(h.calls.at(-1), ['showContours', 5]);
   assert.match(h.lines.at(-1).text, /every 5 ft · 120 lines · 840–1010 ft/);
   await h.run('set contour 200');
-  assert.ok(h.calls.some(([n, v]) => n === 'setContourInterval' && v === 100));
   assert.deepEqual(h.calls.at(-1), ['showContours', 100]);
+  assert.match(h.lines.at(-1).text, /every 100 ft/);
   await h.run('contours off');
   assert.deepEqual(h.calls.at(-1), ['hideContours']);
   assert.equal(await h.run('contour abc'), true);
   assert.match(h.lines.at(-1).text, /Usage: contour/);
+});
+
+test('elevations switch between sea level and relative to the low point', async () => {
+  const h = harness();
+  await h.run('elev');
+  assert.match(h.lines.at(-1).text, /above sea level/);
+  await h.run('elev relative');
+  assert.deepEqual(h.calls.at(-1), ['setDatum', 'relative']);
+  await h.run('contours on');
+  assert.match(
+    h.lines.at(-1).text,
+    /0–170 ft relative \(0 = 840 ft NAVD88, lowest in boundary\)/,
+  );
+  await h.run('datum asl');
+  assert.match(h.lines.at(-1).text, /840–1010 ft NAVD88/);
+  await h.run('contour 20 rel');
+  assert.deepEqual(h.calls.at(-1), ['showContours', 20]);
+  assert.match(h.lines.at(-1).text, /every 20 ft .* ft relative/);
+  await h.run('set elev sea');
+  assert.match(h.lines.at(-1).text, /ft NAVD88/);
+  await h.run('elev sideways');
+  assert.equal(h.lines.at(-1).text, 'Usage: elev asl | relative');
+  await h.run('contours off');
+  await h.run('contour 5 relative');
+  assert.ok(h.calls.some(([n, v]) => n === 'setDatum' && v === 'relative'));
+  assert.match(h.lines.at(-1).text, /5 ft, relative \(0 ft = lowest point/);
 });
 
 test('canopy on/off reports coverage', async () => {
