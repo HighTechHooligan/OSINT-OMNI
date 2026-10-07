@@ -6,6 +6,7 @@
  * call later; the `js` escape hatch is for the person at the keyboard only.
  */
 import { normalizeDatum } from '../services/contourMath.js';
+import { describeRow as describeAirspace } from '../layers/airspace/records.js';
 
 export const FEATURES_CODE_HELP = `Every feature here is also in the SITE panel in the dock.
 Boundary
@@ -31,6 +32,13 @@ Camera
   record [frames] [w] [h]  record the orbit as a GIF (default 144, 800x450)
 Layers
   layer osm on | off       light OSM streets + building footprints
+Airspace (FAA open data; advisory, not a clearance)
+  airspace on | off        TFRs, Class B/C/D/E, special use, LAANC grid
+  airspace tfr|class|sua|laanc on | off
+                           show or hide one kind
+  airspace 3d on | off     extrude floors/ceilings and LAANC ceilings
+  airspace check           what is over the boundary center (or screen
+                           center) + Part 107 advisory
 Console
   cls                      clear this console
   js <expression>          run JavaScript (dev only; viewer, site in scope)
@@ -88,6 +96,22 @@ const DATUM_USAGE = 'Usage: elev asl | relative';
 const LAYER_ALIASES = Object.freeze({
   osm: 'osm-streets',
   streets: 'osm-streets',
+  airspace: 'airspace',
+  faa: 'airspace',
+});
+
+const AIRSPACE_USAGE =
+  'Usage: airspace on|off | airspace tfr|class|sua|laanc|3d on|off | airspace check';
+const AIRSPACE_KIND_ARGS = Object.freeze({
+  tfr: 'tfr',
+  tfrs: 'tfr',
+  class: 'class',
+  classes: 'class',
+  sua: 'sua',
+  laanc: 'laanc',
+  grid: 'laanc',
+  '3d': 'volumes',
+  volumes: 'volumes',
 });
 
 /**
@@ -104,6 +128,7 @@ export function createFeatureCommands({
   pickFile,
   viewer,
   getDataManager = () => null,
+  getViewCenter = () => null,
   allowEval = false,
   recordTitle = 'DJI LIDAR L2+ORTHO',
 }) {
@@ -159,7 +184,50 @@ export function createFeatureCommands({
     print(`Elevations: ${datumWords(datum)} (run "contours on" to draw)`, 'ok');
   }
 
+  async function ensureLayer(dm, id, want = true) {
+    if (dm.isEffectivelyEnabled(id) !== want)
+      await dm.toggle(id, { origin: 'user' });
+  }
+
+  async function airspaceCommand([action, value]) {
+    const dm = getDataManager();
+    if (!dm?.layers?.has?.('airspace'))
+      return print('Airspace layer is not available', 'err');
+    const module = dm.layers.get('airspace').module;
+    const word = String(action ?? '').toLowerCase();
+    const on = switchArg(word);
+    if (!word || on !== null) {
+      const want = on ?? !dm.isEffectivelyEnabled('airspace');
+      await ensureLayer(dm, 'airspace', want);
+      return print(`airspace ${want ? 'on' : 'off'}`, 'ok');
+    }
+    if (Object.hasOwn(AIRSPACE_KIND_ARGS, word)) {
+      const key = AIRSPACE_KIND_ARGS[word];
+      const want = switchArg(value) ?? !module.getParams()[key];
+      await ensureLayer(dm, 'airspace');
+      if (!dm.setLayerParams('airspace', { [key]: want }, { origin: 'user' }))
+        module.setParams({ [key]: want });
+      return print(`airspace ${word} ${want ? 'on' : 'off'}`, 'ok');
+    }
+    if (word === 'check' || word === 'here') {
+      const s = boundary.describe();
+      const at = s?.center ?? getViewCenter();
+      if (!at) return print('No boundary and no screen center to check', 'err');
+      await ensureLayer(dm, 'airspace');
+      const line = print('Checking FAA airspace…', 'dim');
+      const result = await module.checkAt(at.lon, at.lat);
+      line.textContent = `Airspace at ${s ? `${s.name} center` : 'screen center'} (${at.lat.toFixed(5)}, ${at.lon.toFixed(5)}):`;
+      for (const row of result.hits) print(`  ${describeAirspace(row)}`, 'dim');
+      if (!result.hits.length) print('  no charted airspace found', 'dim');
+      for (const note of result.notes)
+        print(note, result.level === 'stop' ? 'err' : 'ok');
+      return;
+    }
+    print(AIRSPACE_USAGE, 'err');
+  }
+
   const commands = {
+    airspace: airspaceCommand,
     help: () => print(FEATURES_CODE_HELP, 'dim'),
     cls: () => clearOutput(),
     async preset([key = 'hyland']) {
@@ -338,6 +406,24 @@ export function createFeatureCommands({
   return { commands, run };
 }
 
+/** Ground point under the middle of the screen, in degrees, or null. */
+function viewCenter(viewer) {
+  const canvas = viewer?.scene?.canvas;
+  if (!canvas) return null;
+  const ellipsoid = viewer.scene.globe?.ellipsoid;
+  const hit = viewer.camera.pickEllipsoid(
+    { x: canvas.clientWidth / 2, y: canvas.clientHeight / 2 },
+    ellipsoid,
+  );
+  if (!hit || !ellipsoid) return null;
+  const c = ellipsoid.cartesianToCartographic(hit);
+  if (!c) return null;
+  return {
+    lon: (c.longitude * 180) / Math.PI,
+    lat: (c.latitude * 180) / Math.PI,
+  };
+}
+
 /**
  * Mount the dock button and console panel.
  * @param {{ viewer: object, site: object, getDataManager?: Function, dock?: HTMLElement|null }} options
@@ -411,6 +497,7 @@ export function mountFeaturesCode({ viewer, site, getDataManager, dock } = {}) {
     clearOutput: () => out.replaceChildren(),
     pickFile,
     viewer,
+    getViewCenter: () => viewCenter(viewer),
     allowEval: Boolean(import.meta.env?.DEV),
   });
 

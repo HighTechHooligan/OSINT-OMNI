@@ -2077,7 +2077,11 @@
       "src/app/layers/osmStreets.js",
       "src/layers/osmStreets/index.js",
       "src/layers/osmStreets/records.js",
-      "src/layers/osmStreets/source.js"
+      "src/layers/osmStreets/source.js",
+      "src/app/layers/airspace.js",
+      "src/layers/airspace/index.js",
+      "src/layers/airspace/records.js",
+      "src/layers/airspace/source.js"
     ],
     "external": [
       "hls.js",
@@ -2571,7 +2575,11 @@
       "src/app/layers/osmStreets.js",
       "src/layers/osmStreets/index.js",
       "src/layers/osmStreets/records.js",
-      "src/layers/osmStreets/source.js"
+      "src/layers/osmStreets/source.js",
+      "src/app/layers/airspace.js",
+      "src/layers/airspace/index.js",
+      "src/layers/airspace/records.js",
+      "src/layers/airspace/source.js"
     ],
     "external": [
       "hls.js",

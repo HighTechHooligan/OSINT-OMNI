@@ -22,6 +22,10 @@ const PANEL_GROUPS = [
     ids: ['osm-streets'],
   },
   {
+    label: 'Airspace',
+    ids: ['airspace'],
+  },
+  {
     label: 'Movement',
     ids: [
       'satellites',
