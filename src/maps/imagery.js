@@ -4,10 +4,16 @@ import * as Cesium from 'cesium';
 export const ESRI_ATTRIBUTION_HTML =
   '<a href="https://www.esri.com" target="_blank" rel="noopener">Powered by Esri</a>';
 
+/**
+ * OSM street basemap through the app's own tile proxy
+ * (server/providers/osmTiles.js), which caches tiles and fails over from
+ * tile.openstreetmap.org to other OSM-style raster hosts.
+ */
 export function createOsmImagery() {
-  return new Cesium.OpenStreetMapImageryProvider({
-    url: 'https://tile.openstreetmap.org/',
-    credit: '© OpenStreetMap contributors',
+  return new Cesium.UrlTemplateImageryProvider({
+    url: '/api/tiles/osm/{z}/{x}/{y}.png',
+    maximumLevel: 19,
+    credit: '© OpenStreetMap contributors · fallback tiles © CARTO, OSM France',
   });
 }
 

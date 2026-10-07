@@ -279,6 +279,62 @@ test('layer osm toggles through the data manager', async () => {
   assert.match(h.lines.at(-1).text, /Unknown layer/);
 });
 
+test('turbines toggles the layer and prints the view summary', async () => {
+  let enabled = false;
+  const toggles = [];
+  const view = {
+    sampled: false,
+    turbines: [
+      { id: '1', lon: -100, lat: 32, kw: 2000, tipM: 150, project: 'Roscoe' },
+    ],
+    summary: {
+      turbines: 1,
+      mw: 2,
+      projects: 1,
+      topProjects: [{ name: 'Roscoe', count: 1 }],
+      tallest: { tipM: 150, project: 'Roscoe' },
+    },
+  };
+  let updates = 0;
+  const module = {
+    update: async () => updates++,
+    getView: () => view,
+    getStats: () => ({ error: null }),
+  };
+  const dm = {
+    layers: new Map([['wind-turbines', { module }]]),
+    isEffectivelyEnabled: () => enabled,
+    toggle: async (id) => {
+      toggles.push(id);
+      enabled = !enabled;
+    },
+  };
+  const viewer = {
+    camera: {
+      positionCartographic: {
+        longitude: (-100.1 * Math.PI) / 180,
+        latitude: (32 * Math.PI) / 180,
+      },
+    },
+  };
+  const h = harness({ getDataManager: () => dm, viewer });
+  await h.run('turbines');
+  assert.deepEqual(toggles, ['wind-turbines']);
+  assert.equal(updates, 1);
+  assert.match(h.lines.at(-1).text, /1 turbines in view · 2 MW/);
+  await h.run('turbines near');
+  assert.match(h.lines.at(-1).text, /km: Turbine · 2000 kW/);
+  await h.run('turbines off');
+  await h.run('layer turbines on');
+  assert.deepEqual(toggles, [
+    'wind-turbines',
+    'wind-turbines',
+    'wind-turbines',
+  ]);
+  await h.run('turbines sideways');
+  assert.match(h.lines.at(-1).text, /Usage: turbines/);
+});
+
 test('unknown commands and inherited names are rejected', async () => {
   const h = harness();
   assert.equal(await h.run('launch'), false);
@@ -333,4 +389,164 @@ test('site, clear and cls report state', async () => {
   await h.run('clear');
   await h.run('cls');
   assert.equal(h.cleared(), 1);
+});
+
+test('viewshed: at lat,lon with a band, click placement, source, gpu and off', async () => {
+  const calls = [];
+  const state = {
+    lowM: 1,
+    highM: 2.5,
+    targetM: 0,
+    gpu: 'dedicated',
+    observer: null,
+    result: null,
+  };
+  const done = (opts) => {
+    for (const k of ['lowM', 'highM', 'targetM'])
+      if (opts[k] != null) state[k] = opts[k];
+    state.observer = opts.at ?? [1, 2];
+    state.result = {
+      banded: state.highM > state.lowM,
+      lowM: state.lowM,
+      highM: state.highM,
+      lowPct: 40,
+      highPct: 62.5,
+      farthestHighM: 410,
+      sourceLabel: 'USGS 3DEP bare earth',
+      cellM: 1,
+      heightsMs: 1200,
+      heightsCached: false,
+      computeMs: 80,
+      engine: 'GPU (Test GPU)',
+    };
+    return { ...state };
+  };
+  const viewshed = {
+    describe: () => ({ ...state }),
+    compute: async (opts = {}) => (calls.push(['compute', opts]), done(opts)),
+    pickObserver: async (opts) => (calls.push(['pick', opts]), done(opts)),
+    setOptions: (opts) => {
+      calls.push(['setOptions', opts]);
+      Object.assign(state, opts);
+    },
+    clear: () => calls.push(['clear']),
+  };
+  const { site } = fakeSite();
+  const h = harness({ site: { ...site, viewshed } });
+  await h.run('viewshed 44.84,-93.36 1-2.5m 6ft');
+  assert.deepEqual(calls[0][1].at, [-93.36, 44.84]);
+  assert.equal(calls[0][1].lowM, 1);
+  assert.equal(calls[0][1].highM, 2.5);
+  assert.ok(Math.abs(calls[0][1].targetM - 1.8288) < 1e-9);
+  assert.match(
+    h.lines.at(-1).text,
+    /40% of the site seen from 1 m, 62.5% from 2.5 m/,
+  );
+  assert.match(
+    h.lines.at(-1).text,
+    /heights 1.20 s, sight lines 0.08 s on GPU/,
+  );
+  await h.run('viewshed 30ft');
+  assert.equal(calls[1][0], 'pick');
+  assert.ok(Math.abs(calls[1][1].highM - 9.144) < 1e-9);
+  await h.run('viewshed mesh');
+  assert.deepEqual(calls[2], ['setOptions', { source: 'mesh' }]);
+  assert.equal(calls[3][0], 'compute');
+  await h.run('viewshed gpu integrated');
+  assert.deepEqual(calls[4], ['setOptions', { gpu: 'integrated' }]);
+  await h.run('viewshed gpu');
+  assert.match(h.lines.at(-1).text, /Computing on: integrated/);
+  await h.run('viewshed tall');
+  assert.equal(h.lines.at(-1).tone, 'err');
+  await h.run('viewshed off');
+  assert.deepEqual(calls.at(-1), ['clear']);
+});
+
+test('plane flies into the cockpit, opens details, and exits', async () => {
+  const calls = [];
+  const aircraft = {
+    find: (q) =>
+      q === 'UAL123' || q === '' ? { layerId: 'flights', id: 'a1b2c3' } : null,
+    flyIn: async (t) => {
+      calls.push(['flyIn', t.id]);
+      return { ok: true };
+    },
+    openDetails: (t) => calls.push(['openDetails', t.id]),
+    exitCockpit: () => {
+      calls.push(['exit']);
+      return true;
+    },
+  };
+  const h = harness({ aircraft });
+  await h.run('plane UAL123');
+  await h.run('plane info');
+  await h.run('plane NOPE');
+  await h.run('plane exit');
+  assert.deepEqual(calls, [
+    ['flyIn', 'a1b2c3'],
+    ['openDetails', 'a1b2c3'],
+    ['exit'],
+  ]);
+  assert.match(h.lines[0].text, /cockpit of A1B2C3/);
+  assert.match(h.lines[2].text, /No aircraft matching "NOPE"/);
+  assert.equal(h.lines[2].tone, 'err');
+});
+
+test('airspace toggles the layer, sets kinds and checks the boundary center', async () => {
+  let enabled = false;
+  const params = {
+    tfr: true,
+    class: true,
+    sua: true,
+    laanc: false,
+    volumes: false,
+  };
+  const set = [];
+  const checks = [];
+  const module = {
+    getParams: () => ({ ...params }),
+    setParams: (p) => Object.assign(params, p),
+    checkAt: async (lon, lat) => {
+      checks.push([lon, lat]);
+      return {
+        hits: [{ kind: 'laanc', ceilingFt: 200, airport: 'FCM' }],
+        notes: ['Class D at the surface — Part 107 needs LAANC'],
+        level: 'auth',
+      };
+    },
+  };
+  const dm = {
+    layers: new Map([['airspace', { module }]]),
+    isEffectivelyEnabled: () => enabled,
+    toggle: async () => {
+      enabled = !enabled;
+    },
+    setLayerParams: (id, p) => {
+      set.push([id, p]);
+      Object.assign(params, p);
+      return true;
+    },
+  };
+  const h = harness({
+    getDataManager: () => dm,
+    getViewCenter: () => ({ lon: -93.3, lat: 44.9 }),
+  });
+  await h.run('airspace on');
+  assert.equal(enabled, true);
+  await h.run('airspace laanc on');
+  await h.run('airspace 3d');
+  assert.deepEqual(set, [
+    ['airspace', { laanc: true }],
+    ['airspace', { volumes: true }],
+  ]);
+  await h.run('airspace check');
+  assert.deepEqual(checks, [[-93.3, 44.9]]);
+  assert.ok(
+    h.lines.some((l) => /LAANC grid · max 200 ft AGL \(FCM\)/.test(l.text)),
+  );
+  assert.ok(h.lines.some((l) => /Class D at the surface/.test(l.text)));
+  await h.run('airspace bogus');
+  assert.match(h.lines.at(-1).text, /Usage: airspace/);
+  await h.run('airspace off');
+  assert.equal(enabled, false);
 });

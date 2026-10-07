@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#0b0b10" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="OMNI Phone" />
+    <title>OMNI Phone</title>
+    <link rel="manifest" href="/phone/manifest.webmanifest" />
+    <link rel="icon" href="/phone/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/phone/icon.svg" />
+    <link rel="stylesheet" href="/phone/tokens.css" />
+    <link rel="stylesheet" href="/phone/phone.css" />
+    <script type="module" src="/phone/phone.js"></script>
+  </head>
+  <body>
+    <!-- Pairing: shown until this phone holds a token. -->
+    <main id="pair-screen" class="screen" hidden>
+      <h1>OMNI Phone</h1>
+      <p class="lead">
+        Drive OSINT OMNI on a computer from this phone. The computer does the
+        work and keeps the answers cached.
+      </p>
+      <ol class="steps">
+        <li>
+          On the computer, open <b>PHONE</b> in the dock and press
+          <b>Pair a phone</b>. (Or type <code>phone pair</code> in Features
+          Code.)
+        </li>
+        <li>Type the six-digit code it shows.</li>
+      </ol>
+      <form id="pair-form" class="stack">
+        <label
+          >Pairing code
+          <input
+            id="pair-code"
+            inputmode="numeric"
+            autocomplete="one-time-code"
+            pattern="[0-9 ]*"
+            maxlength="7"
+            required
+            placeholder="123456"
+        /></label>
+        <label
+          >Your name (shown on the computer)
+          <input id="pair-name" maxlength="40" placeholder="e.g. Sam's phone"
+        /></label>
+        <button type="submit" class="primary">Pair this phone</button>
+        <p id="pair-error" class="error" role="alert"></p>
+      </form>
+    </main>
+
+    <div id="app" hidden>
+      <header class="top">
+        <span class="brand">OMNI Phone</span>
+        <span id="desk-pill" class="pill" role="status">Checking…</span>
+      </header>
+
+      <!-- Job: one site, every drone-job check at once. -->
+      <section id="tab-job" class="screen" data-tab="job">
+        <h2>Drone job check</h2>
+        <form id="job-form" class="stack">
+          <label
+            >Job site
+            <input
+              id="job-site"
+              required
+              placeholder="Place name, or lat, lon"
+              autocomplete="off"
+          /></label>
+          <label
+            >Look around
+            <select id="job-radius">
+              <option value="1">1 km</option>
+              <option value="3" selected>3 km</option>
+              <option value="10">10 km</option>
+              <option value="25">25 km</option>
+            </select>
+          </label>
+          <div class="row">
+            <button type="submit" class="primary">Check this site</button>
+            <button type="button" id="job-show" class="ghost">
+              Show on computer
+            </button>
+          </div>
+        </form>
+        <p class="hint">
+          Radius applies when the site is coordinates; a place name uses that
+          place's own extent.
+        </p>
+        <div id="job-results" class="cards"></div>
+      </section>
+
+      <!-- Computer: drive the desktop app with Features Code commands. -->
+      <section id="tab-desk" class="screen" data-tab="desk" hidden>
+        <h2>Drive the computer</h2>
+        <div class="grid" id="desk-buttons"></div>
+        <form id="desk-form" class="row">
+          <input
+            id="desk-line"
+            placeholder="Features Code command (try help)"
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
+            aria-label="Features Code command"
+          />
+          <button type="submit" class="primary">Send</button>
+        </form>
+        <div id="desk-log" class="log" role="log" aria-live="polite"></div>
+      </section>
+
+      <!-- Tools: every tool the computer offers, run with JSON arguments. -->
+      <section id="tab-tools" class="screen" data-tab="tools" hidden>
+        <h2>All tools</h2>
+        <input
+          id="tool-filter"
+          type="search"
+          placeholder="Filter tools"
+          aria-label="Filter tools"
+        />
+        <ul id="tool-list" class="tool-list"></ul>
+        <div id="tool-detail" hidden>
+          <button type="button" id="tool-back" class="ghost">
+            ‹ All tools
+          </button>
+          <h3 id="tool-title"></h3>
+          <p id="tool-desc" class="hint"></p>
+          <label
+            >Arguments (JSON)
+            <textarea
+              id="tool-args"
+              rows="6"
+              spellcheck="false"
+              autocapitalize="off"
+            ></textarea>
+          </label>
+          <button type="button" id="tool-run" class="primary">Run</button>
+          <div id="tool-result" class="cards"></div>
+        </div>
+      </section>
+
+      <!-- Settings: readability controls and pairing. -->
+      <section id="tab-settings" class="screen" data-tab="settings" hidden>
+        <h2>Settings</h2>
+        <label
+          >Text size <output id="size-out">100%</output>
+          <input id="size" type="range" min="85" max="170" step="5" value="100"
+        /></label>
+        <label class="check"
+          ><input id="contrast" type="checkbox" /> High contrast</label
+        >
+        <p id="settings-device" class="hint"></p>
+        <p id="settings-cache" class="hint"></p>
+        <button type="button" id="unpair" class="ghost danger">
+          Unpair this phone
+        </button>
+      </section>
+
+      <nav class="tabs" aria-label="Sections">
+        <button type="button" data-go="job" aria-current="page">Job</button>
+        <button type="button" data-go="desk">Computer</button>
+        <button type="button" data-go="tools">Tools</button>
+        <button type="button" data-go="settings">Settings</button>
+      </nav>
+    </div>
+  </body>
+</html>

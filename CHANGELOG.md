@@ -2,6 +2,46 @@
 
 ## [Unreleased]
 
+- **Aircraft cockpit and details**: double-click a plane (civil or military)
+  to ride in its cockpit view and open a pop-out with the live flight
+  (callsign, route, altitude, speed, heading), the airframe (type, owner,
+  photo from adsbdb), and the model's history: Wikipedia summary, first
+  flight / service entry / number built from Wikidata, hand-checked notable
+  events for common airliners, and Wikipedia articles that mention the tail
+  number. Features Code `plane [callsign|tail|hex]`, `plane info`,
+  `plane exit`. New server route `/api/aircraft/trivia`.
+- **Viewshed band and speed**: the eye height can be a band (default
+  1–2.5 m). Green is seen even from the low eye, amber only from the high
+  eye, red hidden; a white outline marks the high-eye edge and a cyan one
+  the low-eye edge. Sight lines run on the GPU (WebGL2 shader, identical
+  results to the CPU code) with a choice of dedicated GPU, integrated GPU
+  or CPU workers, so bare-earth grids now use the full 1 m 3DEP resolution
+  (up to a million cells). Heights load once per boundary, share the
+  contours' 3DEP cache, start loading while you pick the spot, and mesh
+  samples go four batches at a time. The status line shows how long heights
+  and sight lines took, and on which processor.
+- **Viewshed** (SITE → Viewshed, Features Code `viewshed`): place an
+  observer inside the site boundary at an eye height (and optional target
+  height) and the area they can see is shaded green, the rest red, with the
+  visible share, area and farthest visible distance. Heights come from the
+  Google 3D mesh when it is on (buildings and trees block the view), else
+  USGS 3DEP bare earth, else globe terrain; earth curvature and refraction
+  are included.
+- **Movable SITE panels**: every SITE section, or the whole tray, has a ⧉
+  button that moves it into a draggable, resizable pop-out panel (and from
+  there into its own window). Closing the panel puts it back in the tray.
+
+- **OSM basemap** loads through `/api/tiles/osm/{z}/{x}/{y}.png`, a server
+  proxy that caches tiles (memory and `.gev-cache/osm-tiles/`, 7 days, stale
+  on failure) and fails over from tile.openstreetmap.org to CARTO Voyager and
+  OSM France HOT. `OSM_TILE_UPSTREAMS` replaces the list.
+- **Overpass** uses public instances by default; `OVERPASS_UPSTREAMS=none`
+  turns it off.
+- **Building mode** draws a draped outline and a marker for every building,
+  and no longer places a building's tint at ellipsoid height 0 when its ground
+  could not be measured. The site zoom no longer puts the camera underground
+  on a flat basemap.
+
 ## [0.2.1] — 2026-10-02 — God's Eye View through Your Agent (with security fixes and other features)
 
 - Ship each bundled data pack once. The region, marine, admin-boundary,
@@ -426,6 +466,7 @@
 Add feed provenance to analyst/view answers and HUD context while retaining existing response fields and runner ownership (Matt Van Horn, #347).
 
 Analyst records for loaded satellites, datacenters and dams, with explicit bounded count/rank coverage (Matt Van Horn, #351).
+
 - New Fire Perimeters layer (Events group): live NIFC WFIGS interagency
   wildfire incident perimeters as ground-clamped polygons with a
   containment-colored fire line, refreshed every 5 minutes from the public
@@ -701,7 +742,6 @@ This changelog records public product changes. For the authoritative description
 of current runtime behavior, see [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md).
 
 ### Other changes
-
 
 - Add ECMWF IFS model selection to Wind (#464, thanks @beneduzi), with model-scoped forecast-step caches, cancellation of replaced requests, and separate issue/valid timestamps.
 
@@ -1511,4 +1551,3 @@ represent previously published GitHub Releases.
 ## [0.1.0] — 2026-02-09
 
 - Initial project version.
-
