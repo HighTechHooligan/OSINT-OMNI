@@ -106,16 +106,41 @@ export function createSiteBoundary(viewer) {
   };
 
   // ---------- heights ----------
+  function hasVisibleTileset() {
+    for (let i = 0; i < scene.primitives.length; i++) {
+      const p = scene.primitives.get(i);
+      if (p instanceof Cesium.Cesium3DTileset && p.show) return true;
+    }
+    return false;
+  }
+
   async function sampleHeights(lonLats) {
     const cartos = lonLats.map(([lon, lat]) =>
       Cesium.Cartographic.fromDegrees(lon, lat),
     );
+    // Only sample the scene when a 3D tileset is showing; on a flat basemap
+    // a bogus height put the site zoom camera underground.
+    if (hasVisibleTileset())
+      try {
+        const sampled = await scene.sampleHeightMostDetailed(cartos);
+        if (sampled.every((c) => Number.isFinite(c?.height)))
+          return sampled.map((c) => c.height);
+      } catch {
+        // sampling unsupported: fall back to terrain
+      }
+    // Flat ellipsoid terrain: the ground is height 0 (globe.getHeight has
+    // been seen returning -410 m here).
+    if (viewer.terrainProvider instanceof Cesium.EllipsoidTerrainProvider)
+      return cartos.map(() => 0);
     try {
-      const sampled = await scene.sampleHeightMostDetailed(cartos);
+      const sampled = await Cesium.sampleTerrainMostDetailed(
+        viewer.terrainProvider,
+        cartos.map((c) => c.clone()),
+      );
       if (sampled.every((c) => Number.isFinite(c?.height)))
         return sampled.map((c) => c.height);
     } catch {
-      // No 3D tiles or sampling unsupported: fall back to the globe.
+      // ellipsoid or unavailable terrain: use the globe below
     }
     return cartos.map((c) => {
       const h = scene.globe?.getHeight?.(c);

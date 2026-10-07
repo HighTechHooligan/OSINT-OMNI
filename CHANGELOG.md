@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+- **OSM basemap** loads through `/api/tiles/osm/{z}/{x}/{y}.png`, a server
+  proxy that caches tiles (memory and `.gev-cache/osm-tiles/`, 7 days, stale
+  on failure) and fails over from tile.openstreetmap.org to CARTO Voyager and
+  OSM France HOT. `OSM_TILE_UPSTREAMS` replaces the list.
+- **Overpass** uses public instances by default; `OVERPASS_UPSTREAMS=none`
+  turns it off.
+- **Building mode** draws a draped outline and a marker for every building,
+  and no longer places a building's tint at ellipsoid height 0 when its ground
+  could not be measured. The site zoom no longer puts the camera underground
+  on a flat basemap.
+
 ## [0.2.1] — 2026-10-02 — God's Eye View through Your Agent (with security fixes and other features)
 
 - Ship each bundled data pack once. The region, marine, admin-boundary,

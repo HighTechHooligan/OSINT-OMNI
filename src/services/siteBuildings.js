@@ -97,6 +97,7 @@ export function createSiteBuildings(
   /** @type {Map<string, object>} */
   const records = new Map();
   let primitives = []; // { primitive, collection, kind }
+  let markers = null; // PointPrimitiveCollection, one point per building
   let handler = null;
   let run = 0;
   const listeners = new Set();
@@ -172,7 +173,7 @@ export function createSiteBuildings(
   }
 
   async function sampleTerrain(points) {
-    const out = new Float64Array(points.length).fill(0);
+    const out = new Float64Array(points.length).fill(Number.NaN);
     try {
       const cartos = points.map(([lon, lat]) =>
         Cesium.Cartographic.fromDegrees(lon, lat),
@@ -182,10 +183,10 @@ export function createSiteBuildings(
         cartos,
       );
       sampled.forEach(
-        (c, j) => (out[j] = Number.isFinite(c?.height) ? c.height : 0),
+        (c, j) => (out[j] = Number.isFinite(c?.height) ? c.height : Number.NaN),
       );
     } catch {
-      // ellipsoid terrain or no terrain: height 0
+      // ellipsoid terrain or no terrain: NaN (callers fall back)
     }
     return out;
   }
@@ -215,20 +216,40 @@ export function createSiteBuildings(
       roof = await sampleMesh(roofPts, 'Measuring roofs…');
       ground = await sampleMesh(groundPts, 'Measuring ground…');
     }
-    const terrain = photoreal
-      ? null
-      : await sampleTerrain(rows.map(({ measure }) => measure.center));
+    const terrain = await sampleTerrain(
+      rows.map(({ measure }) => measure.center),
+    );
+    const measured = rows.map((_, k) => {
+      if (!photoreal) return { groundEll: terrain[k], meshHeightM: null };
+      const slice = (arr, [i, n]) =>
+        Array.from(arr.subarray(i, i + n)).filter(Number.isFinite);
+      const roofs = slice(roof, probes[k].r);
+      const grounds = slice(ground, probes[k].g);
+      const groundEll = grounds.length ? Math.min(...grounds) : Number.NaN;
+      return {
+        groundEll,
+        meshHeightM:
+          roofs.length && grounds.length
+            ? Math.max(...roofs) - groundEll
+            : null,
+      };
+    });
+    // A building whose ground could not be measured must not fall back to
+    // the ellipsoid (height 0): its highlight would sit far underground.
+    // Use the neighbours' median ground, then the terrain sample.
+    const known = measured
+      .map((m) => m.groundEll)
+      .filter(Number.isFinite)
+      .sort((a, b) => a - b);
+    const medianGround = known.length
+      ? known[Math.floor(known.length / 2)]
+      : Number.NaN;
     return rows.map(({ b, measure }, k) => {
-      let groundEll = terrain ? terrain[k] : Number.NaN;
-      let meshHeightM = null;
-      if (photoreal) {
-        const slice = (arr, [i, n]) =>
-          Array.from(arr.subarray(i, i + n)).filter(Number.isFinite);
-        const roofs = slice(roof, probes[k].r);
-        const grounds = slice(ground, probes[k].g);
-        if (grounds.length) groundEll = Math.min(...grounds);
-        if (roofs.length && grounds.length)
-          meshHeightM = Math.max(...roofs) - groundEll;
+      let { groundEll, meshHeightM } = measured[k];
+      let groundEstimated = false;
+      if (!Number.isFinite(groundEll)) {
+        groundEstimated = true;
+        groundEll = Number.isFinite(medianGround) ? medianGround : terrain[k];
       }
       const height = resolveBuildingHeight(b.tags, meshHeightM);
       return {
@@ -244,6 +265,7 @@ export function createSiteBuildings(
         height,
         meshHeightM: Number.isFinite(meshHeightM) ? meshHeightM : null,
         groundEll: Number.isFinite(groundEll) ? groundEll : 0,
+        groundEstimated,
         volumeM3: buildingVolumeM3(
           measure.areaM2,
           height.heightM,
@@ -319,6 +341,7 @@ export function createSiteBuildings(
     for (const { primitive, collection } of primitives)
       collection.remove(primitive);
     primitives = [];
+    markers = null;
   }
 
   function add(collection, primitive, kind) {
@@ -385,15 +408,19 @@ export function createSiteBuildings(
     if (buildings.length) {
       const instances = buildings.map((b) => {
         const css = b.source === 'mesh' ? COLORS.buildingMesh : COLORS.building;
-        const pad = photoreal ? 2 : 0;
+        // On the mesh, reach well below the measured ground and above the
+        // roof so sloped lots, basements and taller-than-tagged roofs still
+        // fall inside the tint volume.
+        const below = photoreal ? (b.groundEstimated ? 40 : 10) : 0;
+        const above = photoreal ? (b.groundEstimated ? 40 : 6) : 0;
         return new Cesium.GeometryInstance({
           id: b.id,
           geometry: new Cesium.PolygonGeometry({
             polygonHierarchy: new Cesium.PolygonHierarchy(
               Cesium.Cartesian3.fromDegreesArray(openRing(b.ring).flat()),
             ),
-            height: b.groundEll - pad,
-            extrudedHeight: b.groundEll + b.height.heightM + pad,
+            height: b.groundEll - below,
+            extrudedHeight: b.groundEll + b.height.heightM + above,
             vertexFormat: Cesium.PerInstanceColorAppearance.VERTEX_FORMAT,
           }),
           attributes: {
@@ -421,8 +448,59 @@ export function createSiteBuildings(
             asynchronous: true,
           });
       add(scene.primitives, primitive, 'building');
+      // Footprint outlines draped on whatever is underneath (mesh or
+      // terrain), so every building stays visible even when its height or
+      // ground estimate is off.
+      add(
+        scene.groundPrimitives,
+        new Cesium.GroundPolylinePrimitive({
+          geometryInstances: buildings.map(
+            (b) =>
+              new Cesium.GeometryInstance({
+                id: b.id,
+                geometry: new Cesium.GroundPolylineGeometry({
+                  positions: Cesium.Cartesian3.fromDegreesArray(b.ring.flat()),
+                  width: 3,
+                }),
+                attributes: { color: color(...outlineStyle(b, false)) },
+              }),
+          ),
+          appearance: new Cesium.PolylineColorAppearance(),
+          classificationType: Cesium.ClassificationType.BOTH,
+          asynchronous: true,
+        }),
+        'building',
+      );
+      // One marker per building above its roof, drawn over everything, to
+      // find and click each detection.
+      markers = new Cesium.PointPrimitiveCollection();
+      for (const b of buildings) {
+        const [lon, lat] = b.center;
+        markers.add({
+          id: b.id,
+          position: Cesium.Cartesian3.fromDegrees(
+            lon,
+            lat,
+            b.groundEll + b.height.heightM + 3,
+          ),
+          pixelSize: 9,
+          color: Cesium.Color.fromCssColorString(outlineStyle(b, false)[0]),
+          outlineColor: Cesium.Color.BLACK.withAlpha(0.7),
+          outlineWidth: 1.5,
+          disableDepthTestDistance: Number.POSITIVE_INFINITY,
+        });
+      }
+      add(scene.primitives, markers, 'marker');
     }
     governorRequestRender('site-buildings');
+  }
+
+  function outlineStyle(record, selected) {
+    if (selected) return [COLORS.selected, 1];
+    return [
+      record.source === 'mesh' ? COLORS.buildingMesh : COLORS.building,
+      0.95,
+    ];
   }
 
   function recolor(id, selected) {
@@ -439,11 +517,32 @@ export function createSiteBuildings(
     const value = Cesium.ColorGeometryInstanceAttribute.toValue(
       Cesium.Color.fromCssColorString(css).withAlpha(alpha),
     );
+    const outline =
+      record.kind === 'building'
+        ? Cesium.ColorGeometryInstanceAttribute.toValue(
+            Cesium.Color.fromCssColorString(
+              outlineStyle(record, selected)[0],
+            ).withAlpha(outlineStyle(record, selected)[1]),
+          )
+        : null;
+    if (record.kind === 'building' && markers)
+      for (let i = 0; i < markers.length; i++) {
+        const point = markers.get(i);
+        if (point.id !== id) continue;
+        point.color = Cesium.Color.fromCssColorString(
+          outlineStyle(record, selected)[0],
+        );
+        point.pixelSize = selected ? 13 : 9;
+      }
     for (const { primitive, kind } of primitives) {
       if (kind !== record.kind) continue;
       try {
         const attrs = primitive.getGeometryInstanceAttributes(id);
-        if (attrs) attrs.color = value;
+        if (attrs)
+          attrs.color =
+            outline && primitive instanceof Cesium.GroundPolylinePrimitive
+              ? outline
+              : value;
       } catch {
         // primitive not ready yet; colour stays as drawn
       }

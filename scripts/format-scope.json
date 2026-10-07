@@ -57,6 +57,8 @@
   "src/tooling/viteBuild.test.mjs",
   "src/tooling/allowedHosts.test.mjs",
   "server/providers/common/http.js",
+  "server/providers/osmTiles.js",
+  "src/tooling/osmTilesProxy.test.mjs",
   "server/providers/common/query.js",
   "server/providers/aircraft/opensky.js",
   "server/providers/aircraft/adsb-lol.js",
