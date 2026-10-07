@@ -13,14 +13,27 @@ phone (/phone/)  ──token──>  computer server (/remote/api/*)  ──>  t
 
 ## Try it
 
-1. Start the server so other devices can reach it:
-   `HOST=0.0.0.0 npm run dev` (or `npm run build && HOST=0.0.0.0 npm run preview`).
+1. Start the server so other devices can reach it: `npm run dev:lan` (port
+   4173), or `npm run build && npm run preview:lan` for a build. These work the
+   same in PowerShell, cmd and bash. (`HOST=0.0.0.0 npm run dev` is bash-only
+   syntax, and the Pinokio launcher always listens on this computer only.) The
+   terminal prints a `Phone:` line with the address to open, or why a phone
+   can't reach the server yet.
 2. Open the app on the computer at `http://localhost:4173`.
 3. Press **PHONE** in the dock, then **Pair a phone**. It shows a six-digit
    code and the address to open on the phone, e.g. `http://192.168.1.20:4173/phone/`.
    (Features Code: `phone pair`.)
 4. On the phone, open that address, type the code and a name. Add it to the
    home screen if you like; it opens full screen.
+
+If the phone can't open the address:
+- Windows asks once whether Node.js may use the network. Allow it on
+  **Private** networks, and make sure the network itself is set to Private
+  (Settings › Network › your connection › Network profile).
+- The phone must be on the same network as the computer, not a guest Wi-Fi.
+  A computer on Ethernet and a phone on Wi-Fi from the same router is fine.
+- If several addresses are listed, the first is the most likely one; the
+  rest are other adapters (VPN, WSL, virtual machines).
 
 ## What the phone has
 
