@@ -39,7 +39,7 @@ test('catalogs construct distinct layers and classification from their supplied 
     signal: b.signal,
     surface: fixtureSurface(b.signal),
   });
-  assert.equal(first.layers.length, 31);
+  assert.equal(first.layers.length, 32);
   assert.deepEqual(
     first.metadata.find(({ id }) => id === 'airspace'),
     { id: 'airspace', disposition: 'local-only' },

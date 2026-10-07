@@ -91,6 +91,13 @@ export function hideOsmCredit(viewer, owner) {
   return true;
 }
 
+export const USWTDB_CREDIT = {
+  key: 'uswtdb',
+  html:
+    'Wind turbines: <a href="https://energy.usgs.gov/uswtdb/" target="_blank" rel="noopener">U.S. Wind Turbine Database</a> ' +
+    '(USGS, LBNL &amp; ACP; public domain)',
+};
+
 export const DATA_CREDITS = [
   // ── Live sources ────────────────────────────────────────────────
   {
