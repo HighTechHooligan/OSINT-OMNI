@@ -17,13 +17,21 @@
 import * as Cesium from 'cesium';
 import { governorRequestRender } from '../renderGovernor.js';
 import { ensureGeoidReady, geoidHeight } from '../data/geoid.js';
-import { buildContours, clampIntervalFt } from './contourMath.js';
+import {
+  buildContours,
+  clampIntervalFt,
+  formatElevationFt,
+  normalizeDatum,
+  pickLabelAnchors,
+} from './contourMath.js';
 import { nad83ShiftAt } from './datum.js';
 import { estimateMeshOffset } from './meshAlign.js';
-import { boundaryAreaM2, pointInRing } from './siteGeometry.js';
+import { projectToWindow } from './siteBoundary.js';
+import { FEET_PER_METRE, boundaryAreaM2, pointInRing } from './siteGeometry.js';
 
 export const CONTOUR_DEFAULTS = Object.freeze({
   intervalFt: 10,
+  datum: 'asl',
   canopyThresholdM: 2.5,
   canopyCellM: 4,
   autoAlign: true,
@@ -36,6 +44,7 @@ const INDEX_CSS = '#FFD27A';
 const MINOR_CSS = '#FFF3D6';
 const CANOPY_CSS = '#3DDC84';
 const MAX_CANOPY_SAMPLES = 40_000;
+const MAX_LABELS = 60;
 
 /** Pick a 3DEP request resolution that keeps the grid modest. */
 export function gridResolutionM(areaM2) {
@@ -156,6 +165,7 @@ export function createSiteContours(
   const scene = viewer.scene;
   const state = {
     intervalFt: CONTOUR_DEFAULTS.intervalFt,
+    datum: CONTOUR_DEFAULTS.datum,
     contoursOn: false,
     canopyOn: false,
     grid: null,
@@ -166,13 +176,55 @@ export function createSiteContours(
   };
   let contourPrimitives = [];
   let canopyPrimitive = null;
+  let labelLayer = null;
+  let removeLabelListener = null;
   let run = 0;
   const listeners = new Set();
   const emit = () => listeners.forEach((fn) => fn(describe()));
 
+  function removeLabels() {
+    removeLabelListener?.();
+    removeLabelListener = null;
+    labelLayer?.remove();
+    labelLayer = null;
+  }
   function removeContours() {
     for (const p of contourPrimitives) scene.groundPrimitives.remove(p);
     contourPrimitives = [];
+    removeLabels();
+  }
+
+  /** HTML elevation labels on index contours (Cesium labels are not used). */
+  async function drawLabels(grid, lines, datum) {
+    const anchors = pickLabelAnchors(lines, MAX_LABELS);
+    if (!anchors.length || typeof document === 'undefined') return;
+    await ensureGeoidReady();
+    const positions = anchors.map(({ m, point: [x, y] }) => {
+      const [lon, lat] = gridToLonLat(grid, x, y);
+      return Cesium.Cartesian3.fromDegrees(lon, lat, m + geoidHeight(lat, lon));
+    });
+    removeLabels(); // an earlier draw may have finished in between
+    labelLayer = document.createElement('div');
+    labelLayer.className = 'site-orbit-labels site-contour-labels';
+    labelLayer.setAttribute('aria-hidden', 'true');
+    const nodes = anchors.map(({ ft }) => {
+      const el = document.createElement('span');
+      el.className = 'site-contour-label';
+      el.textContent = formatElevationFt(ft, datum);
+      labelLayer.appendChild(el);
+      return el;
+    });
+    (viewer.container || document.body).appendChild(labelLayer);
+    const scratch = new Cesium.Cartesian2();
+    removeLabelListener = scene.postRender.addEventListener(() => {
+      positions.forEach((position, i) => {
+        const win = projectToWindow(scene, position, scratch);
+        nodes[i].hidden = !win;
+        if (win)
+          nodes[i].style.transform =
+            `translate(${win.x}px, ${win.y}px) translate(-50%, -50%)`;
+      });
+    });
   }
   function removeCanopy() {
     if (canopyPrimitive) scene.groundPrimitives.remove(canopyPrimitive);
@@ -273,15 +325,13 @@ export function createSiteContours(
     return result;
   }
 
-  function drawContours(grid) {
+  async function drawContours(grid, id) {
     const result = buildContours(
       grid.values,
       grid.width,
       grid.height,
       state.intervalFt,
-      {
-        mask: grid.mask,
-      },
+      { mask: grid.mask, datum: state.datum },
     );
     removeContours();
     for (const index of [false, true]) {
@@ -302,11 +352,18 @@ export function createSiteContours(
       scene.groundPrimitives.add(primitive);
       contourPrimitives.push(primitive);
     }
+    const toFt = (m) =>
+      result.range ? Math.round((m - result.baseM) * FEET_PER_METRE) : null;
     state.stats = {
       lines: result.lines.length,
       levels: result.levels.length,
-      minFt: result.range ? Math.round(result.range.min * 3.2808) : null,
-      maxFt: result.range ? Math.round(result.range.max * 3.2808) : null,
+      datum: result.datum,
+      minFt: toFt(result.range?.min),
+      maxFt: toFt(result.range?.max),
+      // Sea-level elevation of the relative 0 (the lowest point in the zone).
+      baseFt: result.range
+        ? Math.round(result.range.min * FEET_PER_METRE)
+        : null,
       resM: grid.resM,
       cached: grid.cached,
       datumShiftM: grid.shift
@@ -323,14 +380,24 @@ export function createSiteContours(
             }
           : null,
     };
+    try {
+      await drawLabels(grid, result.lines, result.datum);
+    } catch (error) {
+      console.warn('[site-contours] labels:', error?.message || error);
+    }
+    if (id !== run) {
+      removeLabels();
+      return describe();
+    }
     governorRequestRender('site-contours');
     emit();
   }
 
   /** Draw (or redraw) contours at the current interval. */
-  async function showContours({ intervalFt } = {}) {
+  async function showContours({ intervalFt, datum } = {}) {
     if (intervalFt !== undefined)
       state.intervalFt = clampIntervalFt(intervalFt);
+    if (datum !== undefined) state.datum = normalizeDatum(datum, state.datum);
     const site = boundary.requireSite();
     const id = ++run;
     state.contoursOn = true;
@@ -341,11 +408,13 @@ export function createSiteContours(
     const settled = grid.align && !grid.align.pending;
     const aligning =
       state.autoAlign && !settled ? measureAlignment(grid) : null;
-    drawContours(grid);
+    await drawContours(grid, id);
     aligning?.then((align) => {
       if (!align || id !== run || state.grid !== grid || !state.contoursOn)
         return;
-      drawContours(grid);
+      drawContours(grid, id).catch((error) =>
+        console.warn('[site-contours]', error?.message || error),
+      );
     });
     return describe();
   }
@@ -372,6 +441,17 @@ export function createSiteContours(
 
   async function setContourInterval(intervalFt) {
     state.intervalFt = clampIntervalFt(intervalFt);
+    if (state.contoursOn) return showContours();
+    emit();
+    return describe();
+  }
+
+  /** 'asl' = feet above sea level (NAVD88); 'relative' = 0 at the zone's low point. */
+  async function setDatum(value) {
+    const datum = normalizeDatum(value, null);
+    if (!datum)
+      throw new Error(`Unknown datum "${value}". Use asl or relative.`);
+    state.datum = datum;
     if (state.contoursOn) return showContours();
     emit();
     return describe();
@@ -517,6 +597,7 @@ export function createSiteContours(
   function describe() {
     return {
       intervalFt: state.intervalFt,
+      datum: state.datum,
       contoursOn: state.contoursOn,
       canopyOn: state.canopyOn,
       stats: state.stats,
@@ -548,6 +629,7 @@ export function createSiteContours(
     showContours,
     hideContours,
     setContourInterval,
+    setDatum,
     setAutoAlign,
     showCanopy,
     hideCanopy,
