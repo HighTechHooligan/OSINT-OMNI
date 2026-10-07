@@ -2,8 +2,11 @@ import { catalogControlServices } from './catalog.js';
 import { StyleManager } from '../ui/composition.js';
 import { flyToAustin } from '../camera.js';
 import { initCockpitCloudEffects } from '../cockpitCloudEffects.js';
+import { createSiteBoundary } from '../services/siteBoundary.js';
 import { createSiteOrbit } from '../services/siteOrbit.js';
+import { createSiteContours } from '../services/siteContours.js';
 import { mountFeaturesCode } from '../ui/featuresCode.js';
+import { mountSiteTray } from '../ui/siteTray.js';
 
 /** Construct the existing controls and camera presentation. */
 export function createApplicationControls({
@@ -32,13 +35,35 @@ export function createApplicationControls({
   defer(() => styleManager.orbitController.stop());
   defer(() => styleManager.hud.destroy());
   defer(() => styleManager.dispose());
-  // Features Code: dock command line driving site orbit (no AI required).
+  // Site features (boundary, contours, canopy, orbit). Every feature has a
+  // GUI (SITE dock popdown) and a Features Code command; both call these
+  // same services, and a future local agent will call them as tools.
+  const siteBoundary = createSiteBoundary(viewer);
   const siteOrbit = createSiteOrbit(viewer, {
+    boundary: siteBoundary,
     beforeCameraControl: () => styleManager.orbitController?.stop(),
   });
+  const siteContours = createSiteContours(viewer, { boundary: siteBoundary });
+  const site = Object.freeze({
+    boundary: siteBoundary,
+    orbit: siteOrbit,
+    contours: siteContours,
+  });
+  defer(() => siteContours.destroy());
   defer(() => siteOrbit.destroy());
-  const featuresCode = mountFeaturesCode({ viewer, orbit: siteOrbit });
+  defer(() => siteBoundary.destroy());
+  const featuresCode = mountFeaturesCode({
+    viewer,
+    site,
+    // The data manager attaches after controls start; resolve it lazily.
+    getDataManager: () => styleManager._dataManager ?? null,
+  });
   defer(() => featuresCode.destroy());
+  const siteTray = mountSiteTray({
+    site,
+    onOpenFeaturesCode: () => featuresCode.open(),
+  });
+  defer(() => siteTray.destroy());
   // The previous multi-canvas weather compositor remains disabled. Cockpit
   // clouds use a separate, capped low-resolution GPU pass that never attaches
   // Cesium fog or post-process stages and is fully stopped in map mode.
@@ -60,7 +85,8 @@ export function createApplicationControls({
     styleManager,
     weatherEffects,
     cockpitCloudEffects,
-    siteOrbit,
+    site,
     featuresCode,
+    siteTray,
   };
 }

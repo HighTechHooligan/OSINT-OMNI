@@ -1,49 +1,23 @@
 /**
- * Site orbit: load a survey boundary (KML/KMZ or preset), drape it on the
- * globe, fly to it, orbit it, and record the orbit as a looping GIF.
- *
- * Runs without any AI attached. The Features Code console drives it today;
- * the same methods are the tool surface a local agent can call later.
+ * Site orbit: fly to the site boundary, orbit it, and record the orbit as a
+ * looping GIF. The boundary itself (draw / import / presets) lives in
+ * siteBoundary.js; this service only drives the camera and the recorder.
  */
 import * as Cesium from 'cesium';
 import {
-  governorRequestRender,
   holdContinuousRender,
   releaseContinuousRender,
 } from '../renderGovernor.js';
+import { orbitFileName } from './siteGeometry.js';
+import { projectToWindow } from './siteBoundary.js';
 
-export const SITE_PRESETS = Object.freeze({
-  hyland: Object.freeze({
-    name: 'Hyland Hills LiDAR · 8800 Chalet Rd, Bloomington MN',
-    boundary: Object.freeze([
-      [-93.3676942, 44.84030533],
-      [-93.36703429, 44.83986795],
-      [-93.36652921, 44.83985231],
-      [-93.36585962, 44.84027806],
-      [-93.36519303, 44.84027127],
-      [-93.36456583, 44.84074493],
-      [-93.36444377, 44.84152465],
-      [-93.36420866, 44.84185081],
-      [-93.36387822, 44.84226525],
-      [-93.36352726, 44.84261533],
-      [-93.36332711, 44.84267214],
-      [-93.36287246, 44.84288384],
-      [-93.36251648, 44.84314293],
-      [-93.36320968, 44.84575812],
-      [-93.36373801, 44.84680325],
-      [-93.36573552, 44.8468794],
-      [-93.3676942, 44.84030533],
-    ]),
-    points: Object.freeze([
-      ['GCP01', -93.36662, 44.8402],
-      ['GCP02', -93.3661, 44.84355],
-      ['GCP03', -93.36542, 44.84578],
-      ['GCP04', -93.36361, 44.84606],
-      ['GCP05', -93.36333, 44.84464],
-      ['GCP06', -93.36431, 44.84205],
-    ]),
-  }),
-});
+export {
+  haversineMeters,
+  normalizeBoundary,
+  orbitFileName,
+  summarizeBoundary,
+} from './siteGeometry.js';
+export { SITE_PRESETS } from './siteBoundary.js';
 
 export const ORBIT_DEFAULTS = Object.freeze({
   frames: 144, // 2.5° per frame: smooth full revolution
@@ -55,68 +29,8 @@ export const ORBIT_DEFAULTS = Object.freeze({
   rangeFactor: 2.6, // camera range = site radius × factor
 });
 
-const BOUNDARY_CSS = '#FFB000';
-const POINT_CSS = '#DC143C';
+const TITLE_CSS = '#E8365D';
 const RENDER_HOLD = 'site-orbit';
-const EARTH_RADIUS_M = 6_371_008.8;
-
-/** Great-circle distance in metres between two [lon, lat] degree pairs. */
-export function haversineMeters([lon1, lat1], [lon2, lat2]) {
-  const toRad = (d) => (d * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return 2 * EARTH_RADIUS_M * Math.asin(Math.min(1, Math.sqrt(a)));
-}
-
-/** Close a ring, drop invalid vertices, and require at least three corners. */
-export function normalizeBoundary(boundary) {
-  if (!Array.isArray(boundary))
-    throw new TypeError('Boundary must be an array');
-  const ring = boundary
-    .map((p) => [Number(p?.[0]), Number(p?.[1])])
-    .filter(
-      ([lon, lat]) =>
-        Number.isFinite(lon) &&
-        Number.isFinite(lat) &&
-        Math.abs(lon) <= 180 &&
-        Math.abs(lat) <= 90,
-    );
-  if (ring.length < 3)
-    throw new Error('Boundary needs at least 3 valid points');
-  const [first, last] = [ring[0], ring.at(-1)];
-  if (first[0] !== last[0] || first[1] !== last[1]) ring.push([...first]);
-  return ring;
-}
-
-/** Bounding-box centre and the furthest vertex distance from it. */
-export function summarizeBoundary(boundary) {
-  const lons = boundary.map((p) => p[0]);
-  const lats = boundary.map((p) => p[1]);
-  const center = {
-    lon: (Math.min(...lons) + Math.max(...lons)) / 2,
-    lat: (Math.min(...lats) + Math.max(...lats)) / 2,
-  };
-  let radiusM = 0;
-  for (const p of boundary) {
-    radiusM = Math.max(radiusM, haversineMeters([center.lon, center.lat], p));
-  }
-  return { center, radiusM: Math.max(radiusM, 50) };
-}
-
-/** Build a GIF file name from a site name. */
-export function orbitFileName(siteName) {
-  const stem = String(siteName || 'site')
-    .split(/[·—]/)[0]
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '');
-  return `${stem || 'site'}_orbit.gif`;
-}
-
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Load the GIF encoder only when a recording starts (ESM or CJS build). */
@@ -130,204 +44,25 @@ async function loadGifEncoder() {
 
 /**
  * @param {Cesium.Viewer} viewer
- * @param {{ beforeCameraControl?: () => void }} [options]
+ * @param {{ boundary: ReturnType<import('./siteBoundary.js').createSiteBoundary>,
+ *   beforeCameraControl?: () => void }} options
  *   beforeCameraControl stops other camera owners (e.g. the O-key orbit).
  */
-export function createSiteOrbit(viewer, { beforeCameraControl } = {}) {
+export function createSiteOrbit(
+  viewer,
+  { boundary, beforeCameraControl } = {},
+) {
   if (!viewer?.scene)
     throw new TypeError('Site orbit requires a Cesium viewer');
+  if (!boundary) throw new TypeError('Site orbit requires a site boundary');
   const scene = viewer.scene;
-  let site = null;
-  let entities = [];
-  let labelLayer = null;
-  let removeLabelListener = null;
   let spin = null;
   let recording = false;
-
-  // ---------- heights ----------
-  async function sampleHeights(lonLats) {
-    const cartos = lonLats.map(([lon, lat]) =>
-      Cesium.Cartographic.fromDegrees(lon, lat),
-    );
-    try {
-      const sampled = await scene.sampleHeightMostDetailed(cartos);
-      if (sampled.every((c) => Number.isFinite(c?.height)))
-        return sampled.map((c) => c.height);
-    } catch {
-      // No 3D tiles or sampling unsupported: fall back to the globe.
-    }
-    return cartos.map((c) => {
-      const h = scene.globe?.getHeight?.(c);
-      return Number.isFinite(h) ? h : 0;
-    });
-  }
-
-  // ---------- drawing ----------
-  function removeDrawing() {
-    for (const entity of entities) viewer.entities.remove(entity);
-    entities = [];
-    removeLabelListener?.();
-    removeLabelListener = null;
-    labelLayer?.remove();
-    labelLayer = null;
-  }
-
-  function drawLabels() {
-    if (!site.points.length) return;
-    labelLayer = document.createElement('div');
-    labelLayer.className = 'site-orbit-labels';
-    labelLayer.setAttribute('aria-hidden', 'true');
-    const nodes = site.points.map(([id]) => {
-      const el = document.createElement('span');
-      el.className = 'site-orbit-label';
-      el.textContent = id;
-      labelLayer.appendChild(el);
-      return el;
-    });
-    (viewer.container || document.body).appendChild(labelLayer);
-    const scratch = new Cesium.Cartesian2();
-    removeLabelListener = scene.postRender.addEventListener(() => {
-      site.pointPositions.forEach((position, i) => {
-        const win = projectToWindow(position, scratch);
-        const el = nodes[i];
-        if (!win) {
-          el.hidden = true;
-          return;
-        }
-        el.hidden = false;
-        el.style.transform = `translate(${win.x}px, ${win.y - 26}px) translateX(-50%)`;
-      });
-    });
-  }
-
-  function projectToWindow(position, result) {
-    const fn =
-      Cesium.SceneTransforms.worldToWindowCoordinates ??
-      Cesium.SceneTransforms.wgs84ToWindowCoordinates;
-    const win = fn?.(scene, position, result);
-    return win && Number.isFinite(win.x) && Number.isFinite(win.y) ? win : null;
-  }
-
-  function draw() {
-    removeDrawing();
-    entities.push(
-      viewer.entities.add({
-        name: `${site.name} boundary`,
-        polyline: {
-          positions: Cesium.Cartesian3.fromDegreesArray(site.boundary.flat()),
-          width: 5,
-          clampToGround: true, // drapes on terrain and on 3D Tiles
-          material: Cesium.Color.fromCssColorString(BOUNDARY_CSS),
-        },
-      }),
-    );
-    for (const position of site.pointPositions) {
-      entities.push(
-        viewer.entities.add({
-          position,
-          point: {
-            pixelSize: 14,
-            color: Cesium.Color.fromCssColorString(POINT_CSS),
-            outlineColor: Cesium.Color.WHITE,
-            outlineWidth: 3,
-            disableDepthTestDistance: Number.POSITIVE_INFINITY,
-          },
-        }),
-      );
-    }
-    drawLabels();
-    governorRequestRender('site-orbit-draw');
-  }
-
-  async function setSite({ name = 'Site', boundary, points = [] }) {
-    const ring = normalizeBoundary(boundary);
-    const pts = points
-      .map(([id, lon, lat]) => [String(id), Number(lon), Number(lat)])
-      .filter(([, lon, lat]) => Number.isFinite(lon) && Number.isFinite(lat));
-    const summary = summarizeBoundary(ring);
-    const heights = await sampleHeights([
-      [summary.center.lon, summary.center.lat],
-      ...pts.map(([, lon, lat]) => [lon, lat]),
-    ]);
-    site = {
-      name,
-      boundary: ring,
-      points: pts,
-      ...summary,
-      groundM: heights[0],
-      pointPositions: pts.map(([, lon, lat], i) =>
-        Cesium.Cartesian3.fromDegrees(lon, lat, heights[i + 1] + 1),
-      ),
-    };
-    draw();
-    return describe();
-  }
-
-  function describe() {
-    if (!site) return null;
-    return {
-      name: site.name,
-      vertices: site.boundary.length - 1,
-      points: site.points.length,
-      acrossM: Math.round(site.radiusM * 2),
-      center: { ...site.center },
-    };
-  }
-
-  // ---------- inputs ----------
-  async function loadKml(source, name) {
-    const ds = await Cesium.KmlDataSource.load(source, {
-      camera: scene.camera,
-      canvas: scene.canvas,
-      clampToGround: true,
-    });
-    const now = viewer.clock.currentTime;
-    const toLonLat = (cartesian) => {
-      const c = Cesium.Cartographic.fromCartesian(cartesian);
-      return [
-        Cesium.Math.toDegrees(c.longitude),
-        Cesium.Math.toDegrees(c.latitude),
-      ];
-    };
-    let ring = null;
-    let foundName = name;
-    const points = [];
-    for (const entity of ds.entities.values) {
-      if (!ring && entity.polygon) {
-        ring = entity.polygon.hierarchy?.getValue(now)?.positions;
-        foundName ||= entity.name;
-      } else if (!ring && entity.polyline) {
-        ring = entity.polyline.positions?.getValue(now);
-        foundName ||= entity.name;
-      } else if (entity.position && !entity.polygon && !entity.polyline) {
-        const p = entity.position.getValue(now);
-        if (p)
-          points.push([entity.name || `P${points.length + 1}`, ...toLonLat(p)]);
-      }
-    }
-    if (!ring?.length) throw new Error('No polygon or line found in that file');
-    return setSite({
-      name: foundName || 'KML site',
-      boundary: ring.map(toLonLat),
-      points,
-    });
-  }
-
-  function loadPreset(key = 'hyland') {
-    const preset = SITE_PRESETS[String(key).toLowerCase()];
-    if (!preset) {
-      throw new Error(
-        `Unknown preset "${key}". Available: ${Object.keys(SITE_PRESETS).join(', ')}`,
-      );
-    }
-    return setSite(preset);
-  }
-
-  // ---------- camera ----------
-  function requireSite() {
-    if (!site)
-      throw new Error('No site loaded. Run "preset hyland" or "load" first.');
-  }
+  let site = null;
+  const requireSite = () => {
+    site = boundary.requireSite();
+    return site;
+  };
 
   const targetCartesian = () =>
     Cesium.Cartesian3.fromDegrees(
@@ -449,7 +184,7 @@ export function createSiteOrbit(viewer, { beforeCameraControl } = {}) {
     ctx.fillStyle = '#fff';
     const pixelRatio = src.width / (src.clientWidth || src.width);
     site.pointPositions.forEach((position, i) => {
-      const win = projectToWindow(position, scratch);
+      const win = projectToWindow(scene, position, scratch);
       if (!win) return;
       const x = (win.x * pixelRatio - sx) * scale;
       const y = (win.y * pixelRatio - sy) * scale - height * 0.04;
@@ -462,7 +197,7 @@ export function createSiteOrbit(viewer, { beforeCameraControl } = {}) {
     const pad = Math.round(width * 0.02);
     ctx.fillStyle = 'rgba(9, 18, 27, 0.78)';
     ctx.fillRect(pad, pad, Math.round(width * 0.64), Math.round(height * 0.13));
-    ctx.fillStyle = BOUNDARY_CSS;
+    ctx.fillStyle = TITLE_CSS;
     ctx.font = `bold ${Math.round(height * 0.045)}px sans-serif`;
     ctx.fillText(title, pad * 2, pad + height * 0.055, width * 0.6);
     ctx.fillStyle = '#E8EAED';
@@ -560,24 +295,12 @@ export function createSiteOrbit(viewer, { beforeCameraControl } = {}) {
     }
   }
 
-  function clear() {
-    stop();
-    removeDrawing();
-    site = null;
-    governorRequestRender('site-orbit-clear');
-  }
-
   return {
-    describe,
-    loadKml,
-    loadPreset,
-    setSite,
     zoom,
     orbit,
     stop,
     record,
-    clear,
-    destroy: clear,
+    destroy: stop,
     get isOrbiting() {
       return Boolean(spin);
     },
