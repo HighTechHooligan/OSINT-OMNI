@@ -6,6 +6,7 @@ import { createSiteBoundary } from '../services/siteBoundary.js';
 import { createSiteOrbit } from '../services/siteOrbit.js';
 import { createSiteContours } from '../services/siteContours.js';
 import { createSiteBuildings } from '../services/siteBuildings.js';
+import { createInspectionPricing } from '../services/inspectionPricing.js';
 import { createSiteViewshed } from '../services/siteViewshed.js';
 import { createAircraftDossier } from '../services/aircraftDossier.js';
 import { createLocationResearch } from '../tools/locationResearch.js';
@@ -71,6 +72,9 @@ export function createApplicationControls({
       }),
   });
   defer(() => siteBuildings.destroy());
+  // Drone-inspection pricing: surface areas of the selected buildings.
+  const sitePricing = createInspectionPricing({ buildings: siteBuildings });
+  defer(() => sitePricing.destroy());
   const siteViewshed = createSiteViewshed(viewer, { boundary: siteBoundary });
   defer(() => siteViewshed.destroy());
   const site = Object.freeze({
@@ -78,6 +82,7 @@ export function createApplicationControls({
     orbit: siteOrbit,
     contours: siteContours,
     buildings: siteBuildings,
+    pricing: sitePricing,
     viewshed: siteViewshed,
   });
   defer(() => siteContours.destroy());

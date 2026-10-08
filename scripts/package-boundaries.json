@@ -2083,6 +2083,8 @@
       "src/services/buildingMath.js",
       "src/services/dossierModel.js",
       "src/services/siteBuildings.js",
+      "src/services/surfaceMath.js",
+      "src/services/inspectionPricing.js",
       "src/services/siteViewshed.js",
       "src/services/viewshedMath.js",
       "src/services/viewshedEngine.js",
