@@ -131,7 +131,7 @@ export function mountHost(root, services) {
       'div.page',
       {},
       h('h1', { text: 'OMNI host' }),
-      h('p', { text: 'Pair this phone with your OMNI computer. For now the phone and computer must be on the same Wi-Fi; the secure connection for other networks comes in a later update.' }),
+      h('p', { text: 'Pair this phone with your OMNI computer. On the same Wi-Fi, use the address PHONE shows. Away from home, put both on a private network such as Tailscale and use the computer\'s 100.x address; the built-in secure connection comes in a later update.' }),
       h('label.field', {}, h('span', { text: 'Host address' }), hostInput),
       warning,
       pairedBox,
@@ -148,6 +148,6 @@ function explain(error) {
   const msg = String(error?.message || error);
   if (/cleartext/i.test(msg)) return 'This app build blocks plain http. Install the newer build of the app.';
   if (/timed? ?out|failed to connect|unreachable|ECONNREFUSED|could not connect|network/i.test(msg))
-    return `Can't reach the computer at that address. Check the phone is on the same Wi-Fi, the server runs with npm run dev:lan, and Windows allowed Node.js on private networks. (${msg})`;
+    return `Can't reach the computer at that address. Check the phone is on the same Wi-Fi (or Tailscale is on, on both), the server runs with npm run dev:lan, and Windows allowed Node.js on private networks. (${msg})`;
   return msg;
 }

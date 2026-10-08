@@ -1,6 +1,7 @@
 import { PbfReader } from 'pbf';
 import { VectorTile } from '@mapbox/vector-tile';
-import { fillTemplate, tileRange, tilesAlongLine } from './tiles.js';
+import { fillTemplate, tileRange } from './tiles.js';
+import { tilesNearLine } from '../../../src/services/routing/routeGeo.js';
 
 /**
  * Mapped ALPR cameras (Flock and others) from the community OpenStreetMap
@@ -15,7 +16,6 @@ export const DIRECT_CAMERA_TILES =
 /** z9+ tiles carry full attributes; z11 is ~15-20 km across in the US. */
 export const CAMERA_ZOOM = 11;
 export const CAMERA_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-export const MAX_CAMERA_TILES = 160;
 
 export function cameraTileTemplate(hostUrl) {
   const host = String(hostUrl || '').trim().replace(/\/+$/, '');
@@ -93,13 +93,10 @@ export function createCameraSource({
   }
 
   async function forTiles(tiles, options) {
-    if (tiles.length > MAX_CAMERA_TILES)
-      throw new Error(
-        `That trip needs ${tiles.length} camera tiles (limit ${MAX_CAMERA_TILES}); try a shorter route.`,
-      );
     const byId = new Map();
     const report = { network: 0, cache: 0, stale: 0, missing: 0, failed: 0, oldest: null };
     const queue = [...tiles];
+    const total = tiles.length;
     const worker = async () => {
       while (queue.length) {
         const t = queue.shift();
@@ -111,6 +108,7 @@ export function createCameraSource({
         } catch {
           report.failed++;
         }
+        options?.onTile?.(total - queue.length, total);
       }
     };
     await Promise.all(Array.from({ length: 4 }, worker));
@@ -120,9 +118,9 @@ export function createCameraSource({
   return {
     tile,
     forTiles,
-    /** Cameras along a route corridor (tiles the line crosses, ~150 m margin). */
-    forLine(line, options) {
-      return forTiles(tilesAlongLine(line, CAMERA_ZOOM, 0.0015), options);
+    /** Cameras within padM of a line (no length limit; tiles stay cached a week). */
+    forLine(line, { padM = 200, ...options } = {}) {
+      return forTiles(tilesNearLine(line, CAMERA_ZOOM, padM), options);
     },
     forBbox(bbox, options) {
       const r = tileRange(bbox, CAMERA_ZOOM);

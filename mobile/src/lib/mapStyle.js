@@ -1,4 +1,5 @@
 import { countTiles, fillTemplate, tilesInBbox } from './tiles.js';
+import { tilesNearLine } from '../../../src/services/routing/routeGeo.js';
 
 /**
  * Basemap plumbing. Every URL in the style is prefixed with `omni://` so the
@@ -73,6 +74,37 @@ export function fontStacks(style) {
  * @param {Record<string, object>} tileJsons raw TileJSON per source id (for url sources)
  */
 export function planRegion({ style, styleUrl, tileJsons = {}, bbox, maxZoom = REGION_MAX_ZOOM }) {
+  const sources = styleSources(style, styleUrl, tileJsons, maxZoom);
+  const tileCount = sources.reduce((n, s) => n + countTiles(bbox, s.minzoom, s.maxzoom), 0);
+  const extras = styleExtras(style, styleUrl);
+  return {
+    sources,
+    tileCount,
+    extras,
+    estimateBytes: tileCount * AVG_TILE_BYTES,
+    *urls() {
+      yield* extras;
+      for (const s of sources)
+        for (const t of tilesInBbox(bbox, s.minzoom, s.maxzoom)) yield fillTemplate(s.template, t);
+    },
+  };
+}
+
+/**
+ * Map tiles along a route (within padM of it, zoom minZoom..maxZoom), so a
+ * saved route's map works with no signal however long the route is.
+ */
+export function planLine({ style, styleUrl, tileJsons = {}, line, padM = 600, minZoom = 6, maxZoom = REGION_MAX_ZOOM }) {
+  const sources = styleSources(style, styleUrl, tileJsons, maxZoom);
+  const tiles = [];
+  for (const s of sources)
+    for (let z = Math.max(minZoom, s.minzoom); z <= s.maxzoom; z++)
+      for (const t of tilesNearLine(line, z, padM)) tiles.push(fillTemplate(s.template, t));
+  const extras = styleExtras(style, styleUrl);
+  return { tileCount: tiles.length, extras, estimateBytes: tiles.length * AVG_TILE_BYTES, urls: () => [...extras, ...tiles][Symbol.iterator]() };
+}
+
+function styleSources(style, styleUrl, tileJsons, maxZoom) {
   const sources = [];
   for (const [id, source] of Object.entries(style.sources || {})) {
     if (source.type !== 'vector' && source.type !== 'raster') continue;
@@ -86,7 +118,10 @@ export function planRegion({ style, styleUrl, tileJsons = {}, bbox, maxZoom = RE
       maxzoom: Math.min(meta.maxzoom ?? maxZoom, maxZoom),
     });
   }
-  const tileCount = sources.reduce((n, s) => n + countTiles(bbox, s.minzoom, s.maxzoom), 0);
+  return sources;
+}
+
+function styleExtras(style, styleUrl) {
   const extras = [];
   if (style.glyphs) {
     const glyphs = absolute(style.glyphs, styleUrl);
@@ -104,15 +139,15 @@ export function planRegion({ style, styleUrl, tileJsons = {}, bbox, maxZoom = RE
     const base = absolute(sprite, styleUrl);
     for (const suffix of ['.json', '.png', '@2x.json', '@2x.png']) extras.push(base + suffix);
   }
-  return {
-    sources,
-    tileCount,
-    extras,
-    estimateBytes: tileCount * AVG_TILE_BYTES,
-    *urls() {
-      yield* extras;
-      for (const s of sources)
-        for (const t of tilesInBbox(bbox, s.minzoom, s.maxzoom)) yield fillTemplate(s.template, t);
-    },
-  };
+  return extras;
+}
+
+/** Load the basemap style and its TileJSONs through the phone cache. */
+export async function loadBasemap(tiles, styleUrl, { region = null } = {}) {
+  const json = async (url) => JSON.parse(new TextDecoder().decode(await tiles.get(url, { category: 'style', region })));
+  const style = await json(styleUrl);
+  const tileJsons = {};
+  for (const [id, source] of Object.entries(style.sources || {}))
+    if (source.url) tileJsons[id] = await json(new URL(source.url, styleUrl).href);
+  return { style, tileJsons };
 }

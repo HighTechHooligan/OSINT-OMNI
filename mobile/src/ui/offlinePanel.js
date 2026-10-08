@@ -1,12 +1,12 @@
 import { h, sheet, toast } from './dom.js';
-import { planRegion, REGION_MAX_ZOOM, REGION_TILE_LIMIT } from '../lib/mapStyle.js';
+import { loadBasemap, planRegion, REGION_MAX_ZOOM, REGION_TILE_LIMIT } from '../lib/mapStyle.js';
 import { formatBytes } from '../lib/netMeter.js';
 import { cleanUrl } from '../lib/settings.js';
 
 let activeDownload = null;
 
-/** Offline maps, saved routes, storage, cellular data, and settings. */
-export function openOfflinePanel(services, { map, openRecord }) {
+/** Offline maps, storage, cellular data, and settings. Saved routes live in the Routes tab. */
+export function openOfflinePanel(services, { map }) {
   const body = h('div.offline');
   const panel = sheet('Offline & data', body);
   render();
@@ -15,7 +15,6 @@ export function openOfflinePanel(services, { map, openRecord }) {
     const s = services.settings;
     const conn = services.connection();
     const regions = (await services.store.entries('regions')).map(([, r]) => r).sort((a, b) => b.at - a.at);
-    const routes = await services.routes.all();
     const stats = await services.tiles.stats();
     const meter = services.meter.snapshot();
     const b = map.getBounds();
@@ -67,25 +66,6 @@ export function openOfflinePanel(services, { map, openRecord }) {
       h(
         'section',
         {},
-        h('h3', { text: 'Routes on this phone' }),
-        routes.length
-          ? h(
-              'ul.list',
-              {},
-              routes.map((r) =>
-                h(
-                  'li',
-                  {},
-                  h('div', {}, h('strong', { text: r.saved ? r.name || 'Saved route' : `${short(r.fromLabel)} → ${short(r.toLabel)}` }), h('small.muted', { text: `${r.saved ? 'Saved' : 'Recent'} · ${r.costing} · ${r.avoid ? 'avoiding cameras' : 'direct'} · ${new Date(r.at).toLocaleString()}` })),
-                  h('div.row', {}, h('button', { text: 'Open', onclick: () => (panel.close(), openRecord(r, 'cache')) }), h('button.danger', { text: 'Delete', onclick: async () => (await services.routes.remove(r.id), render()) })),
-                ),
-              ),
-            )
-          : h('p.muted', { text: 'Routes you plan are kept here. Save one to keep it until you delete it.' }),
-      ),
-      h(
-        'section',
-        {},
         h('h3', { text: 'Storage' }),
         h('p', { text: `Downloaded areas: ${formatBytes(stats.pinned)}. Browsing cache: ${formatBytes(stats.browse)} of ${formatBytes(stats.budget)}.` }),
         h('button', { text: 'Clear browsing cache', onclick: async () => (await services.tiles.clearBrowse(), render()) }),
@@ -131,11 +111,7 @@ export function openOfflinePanel(services, { map, openRecord }) {
 
 async function regionPlan(services, bbox) {
   const styleUrl = services.settings.styleUrl;
-  const json = async (url) => JSON.parse(new TextDecoder().decode(await services.tiles.get(url, { category: 'style' })));
-  const style = await json(styleUrl);
-  const tileJsons = {};
-  for (const [id, source] of Object.entries(style.sources || {}))
-    if (source.url) tileJsons[id] = await json(new URL(source.url, styleUrl).href);
+  const { style, tileJsons } = await loadBasemap(services.tiles, styleUrl);
   return planRegion({ style, styleUrl, tileJsons, bbox });
 }
 
@@ -198,13 +174,14 @@ function settingsSection(services, rerender) {
     toggle('cellularSaver', 'Cellular saver: reuse kept routes and camera data on cellular'),
     toggle('wifiOnlyDownloads', 'Download areas on Wi-Fi only'),
     h('label.field', {}, h('span', { text: 'Units' }), h('select', { onchange: (e) => services.updateSettings({ units: e.target.value }) }, ['miles', 'kilometers'].map((u) => h('option', { value: u, selected: s.units === u, text: u })))),
-    number('cameraBufferM', 'Camera distance from route (m)', 10, 150),
+    number('cameraRangeM', 'Camera read range (m, incl. map error)', 15, 120),
+    toggle('cameraFrontPlates', 'Cameras read front plates too (most states require one)'),
     number('routeMaxAgeHours', 'Reuse a kept route for (hours)', 0, 720),
     number('tileBudgetMB', 'Browsing cache budget (MB)', 50, 8000),
     url('routerUrl', 'Router (Valhalla)'),
     url('styleUrl', 'Map style'),
     url('geocoderUrl', 'Place search (Nominatim)'),
+    url('overpassUrl', 'Road data (Overpass; the host proxy is tried first when paired)'),
   );
 }
 
-const short = (label = '') => label.split(',')[0];

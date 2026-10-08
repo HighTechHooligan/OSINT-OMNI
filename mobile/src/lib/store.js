@@ -1,9 +1,11 @@
 /**
  * Tiny key-value store over IndexedDB, with an in-memory twin for tests.
  * Object stores: tiles (bytes), tileIndex (size/age/pin, small enough to scan
- * for eviction), cameraTiles, routes, regions, meta.
+ * for eviction), cameraTiles, roadTiles (router road data), routes, regions,
+ * meta. Version 2 added roadTiles.
  */
 export const STORES = Object.freeze([
+  'roadTiles',
   'tiles',
   'tileIndex',
   'cameraTiles',
@@ -40,7 +42,7 @@ export function createMemoryStore() {
 
 export function createIdbStore(dbName = 'omni-portal', idb = globalThis.indexedDB) {
   const ready = new Promise((resolve, reject) => {
-    const open = idb.open(dbName, 1);
+    const open = idb.open(dbName, 2);
     open.onupgradeneeded = () => {
       for (const name of STORES)
         if (!open.result.objectStoreNames.contains(name))

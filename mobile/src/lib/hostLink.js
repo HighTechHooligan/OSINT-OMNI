@@ -10,6 +10,13 @@
  */
 const KEY = 'omni-portal.hostLink';
 
+export class UnpairedError extends Error {}
+
+function hostError(status, data) {
+  if (status === 401) return new UnpairedError(data?.error || 'This phone is not paired. Pair it again from the computer.');
+  return new Error(data?.error || `Host answered HTTP ${status}`);
+}
+
 export function loadLink(storage = globalThis.localStorage) {
   try {
     return JSON.parse(storage?.getItem(KEY) || 'null');
@@ -79,6 +86,37 @@ export function createHostLink({ http, now = Date.now }) {
       if (status !== 200 || !data.ok || !data.token)
         throw new Error(data.error || `Pairing failed (HTTP ${status})`);
       return { hostUrl, token: data.token, device: data.device || null, pairedAt: now() };
+    },
+    /** Every tool the host offers (same catalog as /mcp). */
+    async tools(link) {
+      const { status, data } = await call('GET', `${link.hostUrl}/remote/api/tools`, { token: link.token });
+      if (status !== 200) throw hostError(status, data);
+      return data.tools || [];
+    },
+    async runTool(link, name, args = {}) {
+      const { status, data } = await call('POST', `${link.hostUrl}/remote/api/tools/${encodeURIComponent(name)}`, { token: link.token, body: args });
+      if (status !== 200) throw hostError(status, data);
+      return data;
+    },
+    /**
+     * Run a Features Code line in the desktop app and wait for its output
+     * (lines and, for `snap`, a screenshot). Long jobs keep polling.
+     */
+    async command(link, line, { onStatus = () => {}, timeoutMs = 10 * 60 * 1000, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
+      const queued = await call('POST', `${link.hostUrl}/remote/api/commands`, { token: link.token, body: { line } });
+      if (queued.status !== 202 && queued.status !== 200) throw hostError(queued.status, queued.data);
+      onStatus(queued.data.desktopOnline ? 'running' : 'waiting-for-desktop');
+      const id = queued.data.command?.id;
+      const until = now() + timeoutMs;
+      for (let delay = 400; now() < until; delay = Math.min(delay * 1.4, 3000)) {
+        await sleep(delay);
+        const { status, data } = await call('GET', `${link.hostUrl}/remote/api/commands/${id}`, { token: link.token });
+        if (status !== 200) throw hostError(status, data);
+        const c = data.command;
+        if (c.status === 'running') onStatus('running');
+        if (c.status === 'done' || c.status === 'failed') return c;
+      }
+      return { status: 'timeout', lines: [{ text: 'Still running on the computer.' }], image: null };
     },
     /** Whether the host still accepts this phone, and whether its desktop app is open. */
     async status(link) {

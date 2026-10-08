@@ -8,7 +8,11 @@ import { createGeocoder } from './lib/geocode.js';
 import { createNetMeter } from './lib/netMeter.js';
 import { loadSettings, saveSettings } from './lib/settings.js';
 import { SCHEME, unwrap, rewriteTileJson } from './lib/mapStyle.js';
-import { fetchBytes, getConnection, startNetworkWatch } from './lib/platform.js';
+import { fetchBytes, getConnection, httpPostForm, startNetworkWatch } from './lib/platform.js';
+import { createRoadSource } from './lib/roads.js';
+import { createWorkerSolver } from '../../src/services/routing/workerSolver.js';
+import { createSavedRoutes } from './lib/savedRoutes.js';
+import { loadLink } from './lib/hostLink.js';
 
 /**
  * App services, created once. UI modules call these; no logic lives in the UI.
@@ -66,13 +70,28 @@ export async function createServices() {
     meter,
   });
   const routes = createRouteCache({ store });
+  const roads = createRoadSource({
+    store,
+    post: httpPostForm,
+    // The paired (or named) OMNI host's cached Overpass proxy first, then public Overpass.
+    endpoints: () => {
+      const host = loadLink()?.hostUrl || settings.hostUrl;
+      return host ? [`${host}/api/overpass`, settings.overpassUrl] : [settings.overpassUrl];
+    },
+    canFetch,
+    meter,
+  });
+  const solve = createWorkerSolver();
   const planner = createPlanner({
     routes,
     cameras,
+    roads,
+    solve,
     settings: () => settings,
     connection,
     fetchImpl: metered('routes'),
   });
+  const savedRoutes = createSavedRoutes({ routes, tiles, cameras, planner, styleUrl: () => settings.styleUrl });
   const geocoder = createGeocoder({
     store,
     fetchImpl: metered('search'),
@@ -97,7 +116,9 @@ export async function createServices() {
     store,
     tiles,
     cameras,
+    roads,
     routes,
+    savedRoutes,
     planner,
     geocoder,
     meter,

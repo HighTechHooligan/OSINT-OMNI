@@ -6,6 +6,7 @@
  * call later; the `js` escape hatch is for the person at the keyboard only.
  */
 import { normalizeDatum } from '../services/contourMath.js';
+import { describeRoute, parseRouteArgs } from '../services/routePlanner.js';
 
 export const FEATURES_CODE_HELP = `Every feature here is also in the SITE panel in the dock.
 Boundary
@@ -29,6 +30,12 @@ Camera
   go                       zoom, then orbit
   stop                     stop orbiting and release the camera
   record [frames] [w] [h]  record the orbit as a GIF (default 144, 800x450)
+Routes (also the ROUTES panel in the dock; avoids ALPR cameras by where they face)
+  route <from> to <to> [car|bike|walk] [direct]
+                           places, "lat, lon" or here (the map view);
+                           direct = fastest, just count the cameras
+  route                    show the current route
+  route steps | zoom | clear
 Layers
   layer osm on | off       light OSM streets + building footprints
 Console
@@ -107,7 +114,7 @@ export function createFeatureCommands({
   allowEval = false,
   recordTitle = 'DJI LIDAR L2+ORTHO',
 }) {
-  const { boundary, orbit, contours } = site;
+  const { boundary, orbit, contours, routes } = site;
   const loadedLine = (summary) =>
     print(`Loaded ${describeSite(summary)}`, 'ok');
 
@@ -278,6 +285,50 @@ export function createFeatureCommands({
       });
       line.textContent = `Canopy: ${state.canopy.coveredPct}% of the site under trees/structures (${state.canopy.cellM} m cells)`;
       line.className = 'fc-ok';
+    },
+    async route(args, raw) {
+      if (!routes) return print('Routes are not available here', 'err');
+      const sub = String(args[0] ?? '').toLowerCase();
+      const current = routes.describe().route;
+      if (!raw) {
+        if (!current)
+          return print(
+            'No route. Usage: route <from> to <to> [car|bike|walk] [direct]',
+            'dim',
+          );
+        print(`${describeRoute(current)} · ${current.message}`, 'ok');
+        return;
+      }
+      if (sub === 'clear' && args.length === 1) {
+        routes.clear();
+        return print('Route cleared', 'ok');
+      }
+      if (sub === 'zoom' && args.length === 1) {
+        await routes.zoom();
+        return print('Zoomed to the route', 'ok');
+      }
+      if (sub === 'steps' && args.length === 1) {
+        const steps = routes.steps();
+        if (!steps.length) return print('No route', 'dim');
+        steps.forEach((m, i) => print(`${i + 1}. ${m.instruction}`, 'dim'));
+        return;
+      }
+      const ask = parseRouteArgs(raw);
+      if (!ask)
+        return print(
+          'Usage: route <from> to <to> [car|bike|walk] [direct]',
+          'err',
+        );
+      const line = print('Planning…', 'dim');
+      const r = await routes.plan({
+        ...ask,
+        onProgress: (stage, done, total) => {
+          line.textContent = total ? `${stage}… ${done}/${total}` : `${stage}…`;
+        },
+      });
+      if (!r) return;
+      line.textContent = `${describeRoute(r)} · ${r.message}`;
+      line.className = r.passed.length ? 'fc-err' : 'fc-ok';
     },
     async layer([name, value]) {
       const id = LAYER_ALIASES[String(name ?? '').toLowerCase()] ?? name;

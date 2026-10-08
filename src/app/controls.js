@@ -5,8 +5,11 @@ import { initCockpitCloudEffects } from '../cockpitCloudEffects.js';
 import { createSiteBoundary } from '../services/siteBoundary.js';
 import { createSiteOrbit } from '../services/siteOrbit.js';
 import { createSiteContours } from '../services/siteContours.js';
+import { createSiteRoutes } from '../services/siteRoutes.js';
+import { geocodeKeyless } from '../keylessGeocoder.js';
 import { mountFeaturesCode } from '../ui/featuresCode.js';
 import { mountSiteTray } from '../ui/siteTray.js';
+import { mountRoutesTray } from '../ui/routesTray.js';
 
 /** Construct the existing controls and camera presentation. */
 export function createApplicationControls({
@@ -44,11 +47,17 @@ export function createApplicationControls({
     beforeCameraControl: () => styleManager.orbitController?.stop(),
   });
   const siteContours = createSiteContours(viewer, { boundary: siteBoundary });
+  // Camera-aware routes (ROUTES dock popdown + Features Code `route`).
+  const siteRoutes = createSiteRoutes(viewer, {
+    geocode: (query) => geocodeKeyless(query),
+  });
   const site = Object.freeze({
     boundary: siteBoundary,
     orbit: siteOrbit,
     contours: siteContours,
+    routes: siteRoutes,
   });
+  defer(() => siteRoutes.destroy());
   defer(() => siteContours.destroy());
   defer(() => siteOrbit.destroy());
   defer(() => siteBoundary.destroy());
@@ -64,6 +73,11 @@ export function createApplicationControls({
     onOpenFeaturesCode: () => featuresCode.open(),
   });
   defer(() => siteTray.destroy());
+  const routesTray = mountRoutesTray({
+    routes: siteRoutes,
+    onOpenFeaturesCode: () => featuresCode.open(),
+  });
+  defer(() => routesTray.destroy());
   // The previous multi-canvas weather compositor remains disabled. Cockpit
   // clouds use a separate, capped low-resolution GPU pass that never attaches
   // Cesium fog or post-process stages and is fully stopped in map mode.
@@ -88,5 +102,6 @@ export function createApplicationControls({
     site,
     featuresCode,
     siteTray,
+    routesTray,
   };
 }

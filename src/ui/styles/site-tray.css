@@ -1,5 +1,7 @@
 /* ── SITE: dock item + popdown (boundary, contours, canopy, orbit) ── */
-#command-dock > #site-tray {
+/* ROUTES (routesTray.js) reuses this dock item and popdown. */
+#command-dock > #site-tray,
+#command-dock > #routes-tray {
   position: relative;
   order: -1;
   display: flex;
@@ -23,11 +25,13 @@
     box-shadow 160ms ease;
 }
 
-#command-dock > #site-tray:hover {
+#command-dock > #site-tray:hover,
+#command-dock > #routes-tray:hover {
   border-color: var(--glass-border-hover);
 }
 
-#command-dock > #site-tray.open {
+#command-dock > #site-tray.open,
+#command-dock > #routes-tray.open {
   border-color: rgba(var(--accent-rgb), 0.55);
   box-shadow:
     0 8px 32px rgba(0, 0, 0, 0.5),
@@ -79,7 +83,8 @@
 }
 
 .site-tray-toggle:hover .site-tray-label,
-#site-tray.open .site-tray-label {
+#site-tray.open .site-tray-label,
+#routes-tray.open .site-tray-label {
   color: var(--text-primary);
 }
 
@@ -303,12 +308,15 @@
   cursor: pointer;
 }
 
-body.site-boundary-drawing #cesiumContainer {
+body.site-boundary-drawing #cesiumContainer,
+body.routes-picking #cesiumContainer {
   cursor: crosshair;
 }
 
 body.recording-mode #site-tray,
 body.ui-clean-view #site-tray,
+body.recording-mode #routes-tray,
+body.ui-clean-view #routes-tray,
 body.recording-mode .site-tray-panel,
 body.ui-clean-view .site-tray-panel {
   display: none;

@@ -1,87 +1,83 @@
-import { routeAroundCameras, camerasOnRoute } from './avoid.js';
+import { cameraAwareRoute, cameraMessage } from '../../../src/services/routing/cameraAwareRoute.js';
+import { camerasAlongLine } from '../../../src/services/routing/cameraView.js';
+import { profileFor } from '../../../src/services/routing/roadProfiles.js';
 import { buildRouteRequest, requestRoute } from './valhalla.js';
 import { shouldReuse } from './routeCache.js';
 
 /**
- * One trip request, end to end: reuse a kept route when allowed, otherwise
- * route (around cameras if asked), and keep the result on the phone.
+ * One trip request, end to end: reuse a kept route when allowed; otherwise
+ * ask Valhalla for the usual route, and (with Avoid cameras on) compute our
+ * own route over OpenStreetMap roads that minimises how many cameras can read
+ * the plate, using each camera's mapped facing. No distance limit.
  */
-export function createPlanner({
-  routes,
-  cameras,
-  settings,
-  connection,
-  fetchImpl = fetch,
-  now = Date.now,
-}) {
-  const routeOnce = (from, to, costing) => (excludes) =>
-    requestRoute(
-      settings().routerUrl,
-      buildRouteRequest({ from, to, costing, excludes, units: settings().units }),
-      { fetchImpl },
-    );
+export function createPlanner({ routes, cameras, roads, solve, settings, connection, fetchImpl = fetch, now = Date.now }) {
+  const view = () => ({ rangeM: settings().cameraRangeM, frontPlates: settings().cameraFrontPlates });
 
-  const loadCameras = async (line) => {
-    const { online } = connection();
-    const s = settings();
-    const r = await cameras.forLine(line, {
-      preferCache: !online || (s.cellularSaver && connection().onCellular),
-    });
+  const loadCameras = async (line, padM) => {
+    const conn = connection();
+    const r = await cameras.forLine(line, { padM, preferCache: !conn.online || (settings().cellularSaver && conn.onCellular) });
     return r.cameras;
   };
+
+  async function usualRoute(from, to, costing) {
+    try {
+      return await requestRoute(settings().routerUrl, buildRouteRequest({ from, to, costing, units: settings().units }), { fetchImpl });
+    } catch (error) {
+      // Our own router can still plan with a straight-line corridor.
+      return { error };
+    }
+  }
 
   return {
     /**
      * @returns {Promise<{record: object, from: 'cache'|'network'}>}
      */
-    async plan({ from, to, fromLabel = '', toLabel = '', force = false }) {
+    async plan({ from, to, fromLabel = '', toLabel = '', force = false, onProgress = () => {} }) {
       const s = settings();
       const costing = s.costing;
       const avoid = s.avoidCameras;
       const conn = connection();
       const kept = await routes.find({ from, to, costing, avoid });
-      if (
-        !force &&
-        shouldReuse(kept, {
-          now: now(),
-          maxAgeMs: s.routeMaxAgeHours * 3600_000,
-          cellularSaver: s.cellularSaver,
-          onCellular: conn.onCellular,
-          online: conn.online,
-        })
-      )
+      if (!force && shouldReuse(kept, { now: now(), maxAgeMs: s.routeMaxAgeHours * 3600_000, cellularSaver: s.cellularSaver, onCellular: conn.onCellular, online: conn.online }))
         return { record: kept, from: 'cache' };
-      if (!conn.online)
-        throw new Error('Offline, and no kept route matches this trip. Save routes before you lose signal.');
+      if (!conn.online) throw new Error('Offline, and no kept route matches this trip. Save routes before you lose signal.');
 
-      const route = routeOnce(from, to, costing);
-      let result;
+      onProgress('Asking for the usual route');
+      const usual = await usualRoute(from, to, costing);
+      let route = usual.error ? null : usual;
+      let baselineCams = [];
+      let solved = null;
+      if (route) {
+        onProgress('Checking cameras on the usual route');
+        baselineCams = camerasAlongLine(route.coords, await loadCameras(route.coords, 200), view());
+      }
       if (avoid) {
-        result = await routeAroundCameras({
+        solved = await cameraAwareRoute({
           from,
           to,
+          profile: profileFor(costing),
+          guide: route?.coords,
+          loadRoads: roads.load,
           loadCameras,
-          route,
-          bufferM: s.cameraBufferM,
+          solve,
+          view: view(),
+          units: s.units,
+          onProgress,
         });
-      } else {
-        const r = await route([]);
-        const cams = await loadCameras(r.coords).catch(() => []);
-        const hits = camerasOnRoute(r.coords, cams, s.cameraBufferM);
-        result = {
-          cameras: cams,
-          route: r,
-          baseline: r,
-          baselineHits: hits,
-          remaining: hits,
-          unavoidable: [],
-          excluded: [],
-          passes: 1,
-          stopReason: 'not-avoiding',
-          extraTime: 0,
-          extraLength: 0,
-        };
+        if (solved?.ok) route = solved.route;
+        else if (!route) throw new Error(usual.error?.message || 'No route found between those places.');
       }
+      if (!route) throw usual.error;
+      const passed = solved?.ok ? solved.passed : baselineCams;
+      const baseline = solved?.ok && !usual.error ? usual : null;
+      const message = solved?.ok
+        ? cameraMessage(solved, { baselineCount: baselineCams.length })
+        : avoid
+          ? `Couldn't compute a camera-free route (${solved?.reason || 'no road data'}); showing the usual route, which passes ${baselineCams.length} mapped camera${baselineCams.length === 1 ? '' : 's'}.`
+          : baselineCams.length
+            ? `Passes ${baselineCams.length} mapped camera${baselineCams.length === 1 ? '' : 's'}. Turn on Avoid cameras to route around them.`
+            : 'No mapped camera reads your plate on this route.';
+
       const record = await routes.put({
         // A refresh replaces the kept route in place (saved stays saved).
         id: kept?.id,
@@ -92,15 +88,16 @@ export function createPlanner({
         toLabel,
         costing,
         avoid,
-        route: result.route,
-        baseline: result.baseline === result.route ? null : result.baseline,
-        cameras: result.remaining,
-        baselineCameraCount: result.baselineHits.length,
-        excludedCount: result.excluded.length,
-        unavoidableCount: result.unavoidable.length,
-        stopReason: result.stopReason,
-        extraTime: result.extraTime,
-        extraLength: result.extraLength,
+        route,
+        baseline,
+        cameras: passed,
+        baselineCameraCount: baselineCams.length,
+        message,
+        deadEnd: solved?.ok ? solved.atEnd.length + solved.atStart.length : 0,
+        engine: solved?.ok ? 'omni' : 'valhalla',
+        stats: solved?.stats || null,
+        extraTime: baseline ? route.time - baseline.time : 0,
+        extraLength: baseline ? route.length - baseline.length : 0,
         saved: Boolean(kept?.saved),
         at: now(),
       });

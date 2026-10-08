@@ -36,6 +36,7 @@ export function mountMaps(root, services) {
   );
   const avoidToggle = h('input', { type: 'checkbox', checked: s().avoidCameras, onchange: (e) => services.updateSettings({ avoidCameras: e.target.checked }) });
   const goButton = h('button.primary', { text: 'Route', onclick: () => plan() });
+  const progress = h('p.progress', { hidden: true });
   const netBadge = h('span.badge');
   const search = h(
     'section.search-card',
@@ -50,11 +51,12 @@ export function mountMaps(root, services) {
       h('label.switch', { title: 'Route around mapped ALPR cameras' }, avoidToggle, h('span', { text: 'Avoid cameras' })),
     ),
     h('div.controls-row', {}, netBadge, goButton),
+    progress,
   );
   const fab = h(
     'div.fabs',
     {},
-    h('button.fab', { 'aria-label': 'Offline maps and saved routes', onclick: () => openOfflinePanel(services, { map, openRecord: showRecord }), html: icon('download') }),
+    h('button.fab', { 'aria-label': 'Offline maps and data', onclick: () => openOfflinePanel(services, { map }), html: icon('download') }),
     h('button.fab', { 'aria-label': 'Show cameras', onclick: toggleCameras, html: icon('camera') }),
     h('button.fab', { 'aria-label': 'My location', onclick: locate, html: icon('locate') }),
   );
@@ -224,7 +226,11 @@ export function mountMaps(root, services) {
       return toast('Pick a destination first (search, or long-press the map).');
     }
     goButton.disabled = true;
-    goButton.textContent = s().avoidCameras ? 'Routing around cameras…' : 'Routing…';
+    goButton.textContent = 'Routing…';
+    const onProgress = (stage, done, total) => {
+      progress.hidden = false;
+      progress.textContent = total ? `${stage} ${done}/${total}` : `${stage}…`;
+    };
     try {
       let from = state.from;
       if (!from) {
@@ -238,6 +244,7 @@ export function mountMaps(root, services) {
         fromLabel: from.label,
         toLabel: state.to.label,
         force,
+        onProgress,
       });
       showRecord(record, origin);
     } catch (error) {
@@ -245,6 +252,7 @@ export function mountMaps(root, services) {
     } finally {
       goButton.disabled = false;
       goButton.textContent = 'Route';
+      progress.hidden = true;
     }
   }
 
@@ -307,12 +315,13 @@ export function mountMaps(root, services) {
         h('span.badge', { class: `badge ${state.origin === 'cache' ? 'cached' : 'fresh'}`, text: state.origin === 'cache' ? `Kept route · ${age}` : 'Fresh' }),
       ),
       h('p.camline', { class: `camline ${r.cameras.length ? 'warn' : 'ok'}`, text: camLine }),
+      r.engine === 'valhalla' && r.avoid ? h('p.muted', { text: 'Camera-aware routing could not run for this trip.' }) : '',
       h(
         'div.result-actions',
         {},
         h('button.primary', { text: state.nav ? 'Stop' : 'Start', onclick: () => (state.nav ? stopNav() : startNav()) }),
         h('button', { text: 'Steps', onclick: () => (steps.hidden = !steps.hidden) }),
-        h('button', { text: r.saved ? 'Saved ✓' : 'Save offline', onclick: () => toggleSave() }),
+        h('button', { text: r.saved ? 'Saved ✓' : 'Save', onclick: () => toggleSave() }),
         h('button', { text: 'Refresh', onclick: () => plan({ force: true }), disabled: !services.connection().online }),
       ),
       steps,
@@ -322,12 +331,9 @@ export function mountMaps(root, services) {
 
   async function toggleSave() {
     const r = state.record;
-    const name = r.saved ? r.name : `${shortLabel(r.fromLabel)} → ${shortLabel(r.toLabel)}`;
-    state.record = await services.routes.setSaved(r.id, !r.saved, name);
-    // Make sure the corridor's camera tiles are on the phone too.
-    if (state.record.saved) services.cameras.forLine(r.route.coords).catch(() => {});
+    state.record = r.saved ? await services.savedRoutes.unsave(r.id) : await services.savedRoutes.save(r.id);
     renderResult();
-    toast(state.record.saved ? 'Saved on this phone. It works with no signal.' : 'Removed from saved routes.');
+    toast(state.record.saved ? 'Saved. Find it in the Routes tab; its map is kept on the phone.' : 'Removed from saved routes.');
   }
 
   // ---------- navigation ----------
@@ -429,10 +435,11 @@ export function mountMaps(root, services) {
   updateNetBadge();
   onConnectionChange(updateNetBadge);
 
-  return { shown: () => map.resize(), map };
+  return { shown: () => map.resize(), map, showRecord };
 }
 
 function cameraSummary(r) {
+  if (r.message) return r.message;
   if (!r.avoid) return r.cameras.length ? `Passes ${r.cameras.length} mapped camera${r.cameras.length === 1 ? '' : 's'}. Turn on Avoid cameras to route around them.` : 'No mapped cameras on this route.';
   const extra = r.extraTime > 30 ? ` Detour adds ${formatDuration(r.extraTime)}.` : '';
   if (!r.cameras.length)

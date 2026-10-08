@@ -11,6 +11,7 @@ import { parseLatLon, createGeocoder } from '../src/lib/geocode.js';
 import { cleanUrl } from '../src/lib/settings.js';
 import { createPlanner } from '../src/lib/planner.js';
 import { encodePolyline } from '../src/lib/polyline.js';
+import { solveRoute } from '../../src/services/routing/solveRoute.js';
 
 const austinTile = readFileSync(new URL('../../src/data/fixtures/osm-alpr-austin-11-467-843.pbf', import.meta.url));
 const bytes = (n) => new Uint8Array(n).buffer;
@@ -134,10 +135,18 @@ test('reuse rules: offline and cellular saver use kept routes', () => {
   assert.equal(shouldReuse(null, { ...base, online: false }), false);
 });
 
-test('planner reuses a kept route instead of calling the router', async () => {
+test('planner routes around a camera with the phone router and reuses kept routes', async () => {
   const store = createMemoryStore();
+  // Two parallel roads 220 m apart joined at both ends; a camera sits on the south one.
+  const ways = [
+    { id: 1, nodes: [1, 2, 3], coords: [-97.75, 30.27, -97.74, 30.27, -97.73, 30.27], tags: { highway: 'secondary', name: 'South Rd' } },
+    { id: 2, nodes: [4, 5, 6], coords: [-97.75, 30.272, -97.74, 30.272, -97.73, 30.272], tags: { highway: 'residential', name: 'North Rd' } },
+    { id: 3, nodes: [1, 4], coords: [-97.75, 30.27, -97.75, 30.272], tags: { highway: 'residential', name: 'West St' } },
+    { id: 4, nodes: [3, 6], coords: [-97.73, 30.27, -97.73, 30.272], tags: { highway: 'residential', name: 'East St' } },
+  ];
+  const camera = { id: 'n1', lon: -97.74, lat: 30.2701, direction: null, brand: 'Flock Safety' };
   let routerCalls = 0;
-  const shape = encodePolyline([[-97.75, 30.27], [-97.73, 30.27]]);
+  const shape = encodePolyline([[-97.75, 30.27], [-97.74, 30.27], [-97.73, 30.27]]);
   const fetchImpl = async () => (routerCalls++, {
     ok: true,
     status: 200,
@@ -146,13 +155,20 @@ test('planner reuses a kept route instead of calling the router', async () => {
   const conn = { online: true, onCellular: true };
   const planner = createPlanner({
     routes: createRouteCache({ store }),
-    cameras: { forLine: async () => ({ cameras: [] }) },
-    settings: () => ({ routerUrl: 'https://r', units: 'miles', costing: 'auto', avoidCameras: true, cameraBufferM: 40, cellularSaver: true, routeMaxAgeHours: 24 }),
+    cameras: { forLine: async () => ({ cameras: [camera] }) },
+    roads: { load: async (tiles) => tiles.map(() => ways) },
+    solve: (input) => solveRoute(input),
+    settings: () => ({ routerUrl: 'https://r', units: 'miles', costing: 'auto', avoidCameras: true, cameraRangeM: 40, cameraFrontPlates: true, cellularSaver: true, routeMaxAgeHours: 24 }),
     connection: () => conn,
     fetchImpl,
   });
   const first = await planner.plan({ from: [-97.75, 30.27], to: [-97.73, 30.27] });
   assert.equal(first.from, 'network');
+  assert.equal(first.record.engine, 'omni');
+  assert.equal(first.record.cameras.length, 0);
+  assert.equal(first.record.baselineCameraCount, 1);
+  assert.ok(first.record.route.coords.some(([, lat]) => lat > 30.271), 'took North Rd');
+  assert.match(first.record.message, /No mapped camera reads your plate.*Avoids 1 camera/);
   const again = await planner.plan({ from: [-97.7501, 30.27], to: [-97.73, 30.27] });
   assert.equal(again.from, 'cache');
   assert.equal(routerCalls, 1);

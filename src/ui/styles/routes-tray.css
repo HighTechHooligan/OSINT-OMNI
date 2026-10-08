@@ -1,0 +1,96 @@
+/* ── ROUTES: camera-aware routing popdown (shares the SITE tray styles) ── */
+.routes-tray-glyph {
+  color: var(--accent);
+}
+
+.routes-tray-field {
+  display: grid;
+  grid-template-columns: 2.6rem 1fr auto;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.routes-tray-field input {
+  min-width: 0;
+  padding: 0.35rem 0.5rem;
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 12px;
+}
+
+.routes-tray-field input:focus-visible {
+  outline: 1px solid rgba(var(--accent-rgb), 0.7);
+}
+
+.routes-tray-field button,
+.routes-tray-forget {
+  padding: 0.3rem 0.55rem;
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.site-tray-row button.routes-tray-go {
+  color: #fff;
+  background: var(--accent-fade);
+  border-color: rgba(var(--accent-rgb), 0.6);
+}
+
+.routes-tray-steps {
+  max-height: 14rem;
+  margin: 0;
+  padding-left: 1.3rem;
+  overflow-y: auto;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.routes-tray-recent {
+  display: grid;
+  gap: 0.3rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.routes-tray-recent li {
+  display: flex;
+  gap: 0.3rem;
+}
+
+.routes-tray-trip {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  padding: 0.35rem 0.5rem;
+  color: var(--text-primary);
+  text-align: left;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.routes-tray-trip:hover {
+  border-color: rgba(var(--accent-rgb), 0.5);
+}
+
+.routes-tray-trip small {
+  color: var(--text-dim);
+  font-size: 10.5px;
+}

@@ -4,5 +4,7 @@ import { defineConfig } from 'vite';
 export default defineConfig({
   base: './',
   build: { outDir: 'dist', target: 'es2022', chunkSizeWarningLimit: 1500 },
-  server: { host: true, port: 5180 },
+  // The router engine lives in the desktop's src/services/routing and is shared.
+  server: { host: true, port: 5180, fs: { allow: ['..'] } },
+  worker: { format: 'es' },
 });

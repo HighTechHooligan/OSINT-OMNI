@@ -2,6 +2,8 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import './styles.css';
 import { createServices } from './services.js';
 import { mountMaps } from './ui/mapsTab.js';
+import { mountRoutes } from './ui/routesTab.js';
+import { mountComputer } from './ui/computerTab.js';
 import { mountHost } from './ui/hostTab.js';
 
 // No top-level await: Capacitor's lazily loaded web plugins import this
@@ -10,22 +12,30 @@ start();
 
 async function start() {
   const services = await createServices();
-  const tabs = {
-    maps: mountMaps(document.getElementById('tab-maps'), services),
-    host: mountHost(document.getElementById('tab-host'), services),
-  };
+  const el = (name) => document.getElementById(`tab-${name}`);
+  const tabs = {};
+  tabs.maps = mountMaps(el('maps'), services);
+  tabs.routes = mountRoutes(el('routes'), services, {
+    openOnMap: (record, origin = 'cache') => {
+      show('maps');
+      tabs.maps.showRecord(record, origin);
+    },
+  });
+  tabs.computer = mountComputer(el('computer'), services, { openHost: () => show('host') });
+  tabs.host = mountHost(el('host'), services);
 
-  for (const button of document.querySelectorAll('.tabbar [data-tab]')) {
-    button.addEventListener('click', () => {
-      const name = button.dataset.tab;
-      for (const b of document.querySelectorAll('.tabbar [data-tab]'))
-        b.setAttribute('aria-selected', String(b === button));
-      for (const [key, tab] of Object.entries(tabs)) {
-        const el = document.getElementById(`tab-${key}`);
-        el.hidden = key !== name;
-        el.classList.toggle('active', key === name);
-        if (key === name) tab.shown?.();
-      }
-    });
+  function show(name) {
+    for (const b of document.querySelectorAll('.tabbar [data-tab]'))
+      b.setAttribute('aria-selected', String(b.dataset.tab === name));
+    for (const [key, tab] of Object.entries(tabs)) {
+      const active = key === name;
+      const wasHidden = el(key).hidden;
+      el(key).hidden = !active;
+      el(key).classList.toggle('active', active);
+      if (active && wasHidden) tab.shown?.();
+      if (!active && !wasHidden) tab.hidden?.();
+    }
   }
+  for (const button of document.querySelectorAll('.tabbar [data-tab]'))
+    button.addEventListener('click', () => show(button.dataset.tab));
 }
