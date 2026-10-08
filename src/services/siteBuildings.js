@@ -94,6 +94,8 @@ export function createSiteBuildings(
     selectedId: null,
     restore: null,
   };
+  /** Ids in the current selection (Shift/Ctrl-click adds); drives pricing. */
+  const selection = new Set();
   /** @type {Map<string, object>} */
   const records = new Map();
   let primitives = []; // { primitive, collection, kind }
@@ -550,12 +552,52 @@ export function createSiteBuildings(
     governorRequestRender('site-buildings');
   }
 
-  function select(id) {
-    if (state.selectedId) recolor(state.selectedId, false);
-    state.selectedId = id && records.has(id) ? id : null;
-    if (state.selectedId) recolor(state.selectedId, true);
+  /** Replace the selection with `ids` (unknown ids are dropped). */
+  function setSelection(ids = []) {
+    const next = new Set([...ids].filter((id) => records.has(id)));
+    for (const id of selection) if (!next.has(id)) recolor(id, false);
+    for (const id of next) if (!selection.has(id)) recolor(id, true);
+    selection.clear();
+    for (const id of next) selection.add(id);
+    if (state.selectedId && !selection.has(state.selectedId))
+      state.selectedId = null;
     emit();
-    return state.selectedId ? records.get(state.selectedId) : null;
+  }
+
+  /** Select one feature only (a plain click). */
+  function select(id) {
+    const known = id && records.has(id) ? id : null;
+    setSelection(known ? [known] : []);
+    state.selectedId = known;
+    emit();
+    return known ? records.get(known) : null;
+  }
+
+  /** Add a feature to the selection, or take it out (Shift/Ctrl-click). */
+  function toggle(id, on = !selection.has(id)) {
+    if (!records.has(id)) return false;
+    const next = new Set(selection);
+    if (on) next.add(id);
+    else next.delete(id);
+    setSelection(next);
+    if (on) state.selectedId = id;
+    emit();
+    return on;
+  }
+
+  /** Select every building found (roads and parks stay out). */
+  function selectAllBuildings() {
+    setSelection(
+      [...records.values()]
+        .filter((r) => r.kind === 'building')
+        .map((r) => r.id),
+    );
+    return selection.size;
+  }
+
+  /** Records in the selection, in the order they were found. */
+  function selected() {
+    return [...records.values()].filter((r) => selection.has(r.id));
   }
 
   /** Select a feature and report it (opens its dossier). */
@@ -568,13 +610,31 @@ export function createSiteBuildings(
   function attachPicking() {
     if (handler) return;
     handler = new Cesium.ScreenSpaceEventHandler(scene.canvas);
-    handler.setInputAction((event) => {
-      if (boundary?.isDrawing) return;
+    const pickedId = (event) => {
+      if (boundary?.isDrawing) return null;
       const picked = scene.pick(event.position);
       const id =
         typeof picked?.id === 'string' ? picked.id.replace(/#\d+$/, '') : null;
-      if (id && records.has(id)) pick(id);
+      return id && records.has(id) ? id : null;
+    };
+    handler.setInputAction((event) => {
+      const id = pickedId(event);
+      if (id) pick(id);
     }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+    // Shift- or Ctrl-click adds a feature to the selection (or removes it)
+    // without opening another dossier.
+    for (const modifier of [
+      Cesium.KeyboardEventModifier.SHIFT,
+      Cesium.KeyboardEventModifier.CTRL,
+    ])
+      handler.setInputAction(
+        (event) => {
+          const id = pickedId(event);
+          if (id) toggle(id);
+        },
+        Cesium.ScreenSpaceEventType.LEFT_CLICK,
+        modifier,
+      );
   }
 
   function detachPicking() {
@@ -610,6 +670,8 @@ export function createSiteBuildings(
     state.osmError = null;
     state.area = area.label;
     records.clear();
+    selection.clear();
+    state.selectedId = null;
     clearPrimitives();
     attachPicking();
     say('Asking OpenStreetMap for buildings, roads and parks…');
@@ -710,6 +772,7 @@ export function createSiteBuildings(
     detachPicking();
     clearPrimitives();
     records.clear();
+    selection.clear();
     const restore = state.restore;
     Object.assign(state, {
       on: false,
@@ -769,6 +832,7 @@ export function createSiteBuildings(
       counts: { ...state.counts },
       area: state.area,
       selectedId: state.selectedId,
+      selectedIds: [...selection],
     };
   }
 
@@ -787,6 +851,11 @@ export function createSiteBuildings(
     show,
     hide,
     select,
+    toggle,
+    setSelection,
+    selectAllBuildings,
+    clearSelection: () => setSelection([]),
+    selected,
     pick,
     flyTo,
     get: (id) => records.get(id) ?? null,

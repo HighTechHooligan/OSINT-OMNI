@@ -7,6 +7,7 @@
 
 import { CUFT_PER_M3, SQFT_PER_M2, osmAddress } from './buildingMath.js';
 import { FEET_PER_METRE } from './siteGeometry.js';
+import { buildingSurfaces } from './surfaceMath.js';
 import { planLocationResearch } from '../tools/locationResearch.js';
 
 const int = (n) => Math.round(n).toLocaleString('en-US');
@@ -154,6 +155,27 @@ export function buildDossier(
     if (record.meshHeightM != null && record.height.source !== 'mesh')
       rows.push(['Mesh height', fmtLength(record.meshHeightM)]);
     sections.push({ title: 'Footprint & volume', rows });
+    const surf = buildingSurfaces(record);
+    const roofNote =
+      surf.pitchDeg != null
+        ? `${titleCase(surf.roofShape)}${surf.pitchDeg ? `, ${surf.pitchDeg}° pitch` : ''}`
+        : titleCase(surf.roofShape);
+    sections.push({
+      title: 'Inspection surfaces',
+      rows: [
+        ['Roof', `${fmtArea(surf.roofM2)} (${roofNote})`],
+        [
+          'Walls',
+          `${fmtArea(surf.wallM2)} (eaves at ${fmtLength(surf.eaveM)})`,
+        ],
+        ['Total', fmtArea(surf.totalM2)],
+        ...(surf.assumed.length ? [['Assumed', surf.assumed.join(', ')]] : []),
+        [
+          'Pricing',
+          'Shift-click more buildings, then SITE → Inspection pricing',
+        ],
+      ],
+    });
     if (record.detection)
       sections.push({
         title: 'Detection',
