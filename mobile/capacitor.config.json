@@ -1,0 +1,7 @@
+{
+  "appId": "net.osintomni.portal",
+  "appName": "OMNI Portal",
+  "webDir": "dist",
+  "android": { "allowMixedContent": false },
+  "ios": { "contentInset": "never" }
+}

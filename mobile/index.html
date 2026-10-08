@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#0b0b12" />
+    <title>OMNI Portal</title>
+  </head>
+  <body>
+    <div id="app">
+      <main id="tab-maps" class="tab active" aria-label="Maps"></main>
+      <main id="tab-host" class="tab" aria-label="Host" hidden></main>
+      <nav class="tabbar" role="tablist">
+        <button role="tab" data-tab="maps" aria-selected="true">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3 3 5.5v15L9 18l6 3 6-2.5v-15L15 6 9 3Zm0 2.2 6 3v10.6l-6-3V5.2Z" /></svg>
+          <span>Maps</span>
+        </button>
+        <button role="tab" data-tab="host" aria-selected="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v10H4V4Zm2 2v6h12V6H6Zm-3 10h18v2H3v-2Zm5 3h8v1.5H8V19Z" /></svg>
+          <span>Host</span>
+        </button>
+      </nav>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
