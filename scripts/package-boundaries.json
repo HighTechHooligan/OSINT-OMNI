@@ -2631,6 +2631,7 @@
       "src/app/operations.js",
       "src/sources/sourceSlot.js",
       "src/app/surfaceServices.js",
+      "src/services/resourceBudgets.js",
       "src/data/dataCredits.js",
       "src/data/geoid.js",
       "src/data/local_data/natural_earth/marine.json",
