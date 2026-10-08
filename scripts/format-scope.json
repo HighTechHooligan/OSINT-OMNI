@@ -941,6 +941,8 @@
   "src/services/siteViewshed.js",
   "src/services/viewshedMath.js",
   "src/services/viewshedEngine.js",
+  "src/services/resourceBudgets.js",
+  "src/services/resourceBudgets.test.mjs",
   "src/services/viewshedGpu.js",
   "src/services/viewshed.worker.js",
   "src/tools/locationResearch.js",

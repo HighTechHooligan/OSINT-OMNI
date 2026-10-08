@@ -11,6 +11,7 @@ import { parseLength } from '../services/surveyGeometry.js';
 import { dedicatedGpuAdvice } from '../services/viewshedGpu.js';
 import { parseShapeText } from '../services/viewshedShapes.js';
 import { resultLine } from './viewshedTray.js';
+import { BUDGET_PROFILES, budgetLine } from '../services/resourceBudgets.js';
 import { parseHeightM, parseHeightRange } from '../services/viewshedMath.js';
 import { openCoordinatePaste } from './coordinatePaste.js';
 import {
@@ -61,6 +62,17 @@ Viewshed (VIEWSHED tab; reach 1 km by default)
   viewshed gpu             the GPU in use, and how to switch to the dedicated one
   viewshed orbit [stop]    orbit the observer and its reach
   viewshed off             clear the viewshed
+Machine use (CPU, GPU and RAM the app may take; also VIEWSHED > Machine use)
+  budget                   show the budgets in force
+  budget light | balanced | high | max  pick a profile (default high)
+  budget workers <n|auto>  CPU threads for the viewshed
+  budget hybrid on | off   GPU and CPU threads together on routes and areas
+  budget gpu <x>           GPU work per run (1 = about a second)
+  budget cache <4 GB>      Google 3D tile RAM cache (resizes at once)
+  budget grids <768 MB>    viewshed height grids kept in RAM
+  budget <name> <value>    also: batch, observers, cells, wide, mesh,
+                           fetch, overflow, globe, heights
+  budget reset             back to the high profile
 Aircraft (or double-click a plane on the globe)
   plane [callsign|tail|hex]  ride in its cockpit and open its details;
                            no name = the plane you are following
@@ -678,6 +690,30 @@ export function createFeatureCommands({
       const id = LAYER_ALIASES[String(name ?? '').toLowerCase()] ?? name;
       if (!id) return print('Usage: layer osm on|off', 'err');
       await setLayer(id, switchArg(value), name);
+    },
+    budget(args) {
+      const budgets = site.budgets;
+      if (!budgets) return print('Budgets are not available', 'err');
+      const [first, ...rest] = args.map((a) => a.toLowerCase());
+      if (!first)
+        return print(`Machine use: ${budgetLine(budgets.get())}`, 'ok');
+      if (first === 'reset')
+        return print(`Machine use: ${budgetLine(budgets.reset())}`, 'ok');
+      if (first in BUDGET_PROFILES)
+        return print(
+          `Machine use: ${budgetLine(budgets.setProfile(first))}`,
+          'ok',
+        );
+      if (!rest.length)
+        return print(
+          'Usage: budget [light|balanced|high|max|reset] or budget <name> <value>',
+          'dim',
+        );
+      const b = budgets.set(first, rest.join(' '));
+      return print(
+        `Machine use: ${budgetLine(b)}. Viewshed changes apply from the next run.`,
+        'ok',
+      );
     },
     async turbines([arg]) {
       const on = switchArg(arg);

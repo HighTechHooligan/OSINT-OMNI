@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+- **Machine use: more CPU, GPU and RAM**: a new budget service
+  (`src/services/resourceBudgets.js`) with four profiles: light, balanced
+  (the old limits), high (new default) and max. High runs viewshed routes
+  and areas on the GPU and every CPU core but one at the same time (the CPU
+  threads take a share of the observers sized to their speed), gives a run
+  4× the GPU work (finer cells, up to 8,000 observers, 4M cells for a point
+  and 16M for routes), draws 4× bigger GPU batches, fetches 3DEP tiles 8 at
+  a time, and keeps a 600k-cell mesh snapshot. RAM: the Google 3D tile cache
+  goes from 1.5 GB to 4 GB (+2 GB overflow, resized live), the globe tile
+  cache from 100 to 1,000 tiles, the terrain height cache from 20k to 100k
+  points, and viewshed height grids are kept for several areas (768 MB)
+  instead of one. Each budget can be set on its own and is remembered.
+  GUI: VIEWSHED → Machine use. Features Code: `budget [profile]`,
+  `budget workers|hybrid|gpu|cache|grids <value>`, `budget reset`.
 - **Aircraft cockpit and details**: double-click a plane (civil or military)
   to ride in its cockpit view and open a pop-out with the live flight
   (callsign, route, altitude, speed, heading), the airframe (type, owner,

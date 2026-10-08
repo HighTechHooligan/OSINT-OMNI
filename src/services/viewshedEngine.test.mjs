@@ -1,7 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createViewshedEngine } from './viewshedEngine.js';
-import { computeViewshedBand } from './viewshedMath.js';
+import {
+  ENGINE_WORK,
+  affordableObservers,
+  cpuShare,
+  createViewshedEngine,
+} from './viewshedEngine.js';
+import { computeViewshedBand, computeViewshedMulti } from './viewshedMath.js';
+import { BUDGET_PROFILES } from './resourceBudgets.js';
 
 function terrain(n) {
   const heights = new Float32Array(n * n);
@@ -51,7 +57,7 @@ test('CPU pool splits rows across workers and matches one pass', async () => {
     makeWorker: () => fakeWorker(log),
   });
   assert.equal(engine.kind, 'CPU');
-  assert.equal(engine.maxCells, 250_000);
+  assert.equal(engine.maxCells, BUDGET_PROFILES.high.cpuCells); // default profile
   const out = await engine.compute(input);
   assert.deepEqual(log, [
     [0, 13],
@@ -142,4 +148,105 @@ test('observer budget shrinks with the cube of the reach', async () => {
   const near = affordableObservers(ENGINE_WORK.gpu, 333); // 1 km at 3 m
   assert.ok(near > 200 && near < 400, String(near));
   assert.equal(affordableObservers(ENGINE_WORK.cpu, 5000), 8); // never below 8
+});
+
+test('budgets set the worker count, cell budgets and observer cap', async () => {
+  let b = {
+    cpuWorkers: 2,
+    cpuCells: 123_456,
+    gpuWorkScale: 3,
+    maxObservers: 50,
+  };
+  const made = [];
+  const engine = createViewshedEngine({
+    mode: 'cpu',
+    budgets: () => b,
+    makeWorker: () => {
+      const w = fakeWorker([]);
+      made.push(w);
+      return w;
+    },
+  });
+  assert.equal(engine.maxCells, 123_456);
+  assert.equal(engine.maxCellsWide, 123_456);
+  assert.equal(engine.maxObservers, 50);
+  assert.equal(engine.workers, 2);
+  assert.equal(engine.work, ENGINE_WORK.cpu * (2 / 7) * 3);
+  const input = terrain(29);
+  assert.equal((await engine.compute(input)).engine, 'CPU ×2');
+  b = { ...b, cpuWorkers: 5 };
+  assert.equal((await engine.compute(input)).engine, 'CPU ×5');
+  assert.equal(made.length, 7); // the pool was rebuilt at the new size
+  engine.destroy();
+});
+
+test('CPU share of a hybrid run follows relative speed, at most half', () => {
+  assert.equal(cpuShare(ENGINE_WORK.gpu, 0), 0);
+  const dedicated = cpuShare(ENGINE_WORK.gpu, 15);
+  const integrated = cpuShare(ENGINE_WORK.integrated, 15);
+  assert.ok(dedicated > 0.03 && dedicated < 0.1, String(dedicated));
+  assert.ok(integrated > dedicated);
+  assert.equal(cpuShare(1, 64), 0.5);
+  assert.equal(affordableObservers(1e30, 10, 9000), 9000);
+  assert.equal(affordableObservers(1e30, 10), 2000);
+});
+
+/** A worker answering multi-observer jobs like viewshed.worker.js. */
+function fakeMultiWorker(log) {
+  const listeners = new Set();
+  return {
+    addEventListener: (type, fn) => type === 'message' && listeners.add(fn),
+    removeEventListener: (type, fn) => listeners.delete(fn),
+    postMessage({ id, input }) {
+      log.push(input.observers.length);
+      const { codes, used } = computeViewshedMulti(input);
+      queueMicrotask(() =>
+        listeners.forEach((fn) => fn({ data: { id, codes, used } })),
+      );
+    },
+    terminate() {},
+  };
+}
+
+test('hybrid: CPU workers take a share of the observers beside the GPU', async () => {
+  const input = terrain(48);
+  input.observers = Array.from({ length: 200 }, (_, i) => ({
+    col: 4 + (i % 40),
+    row: 4 + Math.floor(i / 5),
+  }));
+  input.maxDistM = 40;
+  const gpuSaw = [];
+  const fakeGpu = {
+    maxSide: 4096,
+    renderer: 'Intel(R) UHD Graphics 630',
+    compute(job) {
+      gpuSaw.push(job.observers.length, job.batchCells);
+      const { codes, used } = computeViewshedMulti(job);
+      codes.used = used;
+      return codes;
+    },
+    destroy() {},
+  };
+  const cpuSaw = [];
+  const engine = createViewshedEngine({
+    budgets: () => ({ ...BUDGET_PROFILES.high, cpuWorkers: 4 }),
+    createGpu: () => fakeGpu,
+    makeWorker: () => fakeMultiWorker(cpuSaw),
+  });
+  const out = await engine.compute(input);
+  assert.match(out.engine, /^GPU \(Intel\(R\) UHD Graphics 630\) \+ CPU ×\d$/);
+  assert.equal(out.split.gpu + out.split.cpu, 200);
+  assert.ok(
+    out.split.cpu > 0 && out.split.cpu < 100,
+    JSON.stringify(out.split),
+  );
+  assert.equal(gpuSaw[1], BUDGET_PROFILES.high.gpuBatchCells);
+  assert.equal(
+    cpuSaw.reduce((a, n) => a + n, 0),
+    out.split.cpu,
+  );
+  const whole = computeViewshedMulti(input);
+  assert.deepEqual(Uint8Array.from(out.codes), whole.codes);
+  assert.equal(out.used, whole.used);
+  engine.destroy();
 });

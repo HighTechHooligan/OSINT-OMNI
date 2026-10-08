@@ -35,6 +35,7 @@ import { haversineMeters, pointInRing } from './siteGeometry.js';
 import { captureMeshHeights, meshSnapshotSupported } from './meshSnapshot.js';
 import { pickShape as pickShapeOnGlobe } from './shapePicker.js';
 import { affordableObservers, createViewshedEngine } from './viewshedEngine.js';
+import { resourceBudgets } from './resourceBudgets.js';
 import {
   BAND,
   VIEWSHED_DEFAULTS,
@@ -97,6 +98,7 @@ export function createSiteViewshed(
     fetchImpl = (...a) => fetch(...a),
     createEngine = createViewshedEngine,
     pickShapeImpl = pickShapeOnGlobe,
+    budgets = () => resourceBudgets.get(),
   } = {},
 ) {
   if (!viewer?.scene) throw new TypeError('Viewshed requires a Cesium viewer');
@@ -126,7 +128,22 @@ export function createSiteViewshed(
   let overlay = null;
   let shapeEntities = [];
   let picker = null;
-  let gridCache = { key: null, promise: null };
+  // Height grids by area + source + cell budget, newest last, kept up to
+  // the gridCacheMB budget so switching between areas reuses their heights.
+  const gridCache = new Map();
+  const gridBytes = (grid) =>
+    (grid?.values?.byteLength ?? 0) + (grid?.mask?.byteLength ?? 0);
+  function trimGrids() {
+    const cap = budgets().gridCacheMB * 1024 * 1024;
+    let total = 0;
+    for (const entry of gridCache.values()) total += entry.bytes;
+    for (const [key, entry] of gridCache) {
+      if (total <= cap || gridCache.size <= 1) break;
+      if (!entry.bytes) continue; // still loading
+      gridCache.delete(key);
+      total -= entry.bytes;
+    }
+  }
   let engine = null;
   let run = 0;
 
@@ -221,7 +238,14 @@ export function createSiteViewshed(
       }
     };
     await Promise.all(
-      Array.from({ length: SITE_VIEWSHED_DEFAULTS.sampleConcurrency }, lane),
+      Array.from(
+        {
+          length:
+            budgets().sampleConcurrency ??
+            SITE_VIEWSHED_DEFAULTS.sampleConcurrency,
+        },
+        lane,
+      ),
     );
     return grid;
   }
@@ -255,7 +279,7 @@ export function createSiteViewshed(
       const pixels = scene.drawingBufferWidth * scene.drawingBufferHeight;
       const cells = Math.min(
         budget,
-        SITE_VIEWSHED_DEFAULTS.meshMaxCells,
+        budgets().meshCells ?? SITE_VIEWSHED_DEFAULTS.meshMaxCells,
         Math.max(10_000, Math.floor(pixels / 6)),
       );
       return captureMeshHeights(viewer, lonLatGrid(area.bbox, cells), {
@@ -308,7 +332,13 @@ export function createSiteViewshed(
       }
     };
     await Promise.all(
-      Array.from({ length: SITE_VIEWSHED_DEFAULTS.demConcurrency }, lane),
+      Array.from(
+        {
+          length:
+            budgets().demConcurrency ?? SITE_VIEWSHED_DEFAULTS.demConcurrency,
+        },
+        lane,
+      ),
     );
     grid.datum = first?.datum;
     grid.shift = first ? gridDatumShift({ ...first, bbox: area.bbox }) : null;
@@ -386,15 +416,24 @@ export function createSiteViewshed(
       .map((v) => v.toFixed(6))
       .join(',');
     const key = `${source}|${budget}|${state.clip}|${box}`;
-    if (gridCache.key !== key) {
-      const promise = fetchGrid(area, source, budget);
-      gridCache = { key, promise };
-      promise.catch(() => {
-        if (gridCache.promise === promise)
-          gridCache = { key: null, promise: null };
-      });
+    const hit = gridCache.get(key);
+    if (hit) {
+      gridCache.delete(key); // most recently used goes last
+      gridCache.set(key, hit);
+      return hit.promise;
     }
-    return gridCache.promise;
+    const entry = { promise: fetchGrid(area, source, budget), bytes: 0 };
+    gridCache.set(key, entry);
+    entry.promise.then(
+      (grid) => {
+        entry.bytes = gridBytes(grid);
+        trimGrids();
+      },
+      () => {
+        if (gridCache.get(key) === entry) gridCache.delete(key);
+      },
+    );
+    return entry.promise;
   }
 
   async function fetchGrid(area, source, budget) {
@@ -687,7 +726,7 @@ export function createSiteViewshed(
     if (gpu && gpu !== state.gpu) {
       state.gpu = gpu;
       engine?.setMode(gpu);
-      gridCache = { key: null, promise: null }; // the cell budget may change
+      // The cell budget may change; grids for other budgets stay cached.
     }
   }
 
@@ -735,7 +774,11 @@ export function createSiteViewshed(
       const { points, spacingM } = shapeObservers(
         current,
         2 * cellM,
-        affordableObservers(getEngine().work ?? Infinity, state.reachM / cellM),
+        affordableObservers(
+          getEngine().work ?? Infinity,
+          state.reachM / cellM,
+          getEngine().maxObservers ?? budgets().maxObservers,
+        ),
       );
       const seen = new Set();
       const observers = [];
@@ -979,7 +1022,7 @@ export function createSiteViewshed(
   }
 
   const offBoundary = boundary?.onChange?.(() => {
-    if (state.clip) gridCache = { key: null, promise: null };
+    if (state.clip) gridCache.clear();
     emit();
   });
 
@@ -1002,6 +1045,7 @@ export function createSiteViewshed(
     },
     destroy() {
       clear();
+      gridCache.clear();
       engine?.destroy();
       offBoundary?.();
       listeners.clear();

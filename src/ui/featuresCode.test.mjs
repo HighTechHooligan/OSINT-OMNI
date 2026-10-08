@@ -6,6 +6,7 @@ import {
   parseCommand,
   switchArg,
 } from './featuresCode.js';
+import { createResourceBudgets } from '../services/resourceBudgets.js';
 
 function fakeSite() {
   const calls = [];
@@ -598,4 +599,31 @@ test('airspace toggles the layer, sets kinds and checks the boundary center', as
   assert.match(h.lines.at(-1).text, /Usage: airspace/);
   await h.run('airspace off');
   assert.equal(enabled, false);
+});
+
+test('budget shows, switches profiles, sets one budget and resets', async () => {
+  const budgets = createResourceBudgets({
+    storage: { getItem: () => null, setItem() {} },
+    cores: 12,
+  });
+  const h = harness({ site: { budgets } });
+  assert.equal(await h.run('budget'), true);
+  assert.match(
+    h.lines.at(-1).text,
+    /^Machine use: high · 11 of 12 CPU threads/,
+  );
+  await h.run('budget max');
+  assert.equal(budgets.get().profile, 'max');
+  await h.run('budget cache 6 GB');
+  assert.equal(budgets.get().tilesetCacheMB, 6144);
+  assert.match(h.lines.at(-1).text, /max \(custom\).*3D tiles cache 6 GB/);
+  await h.run('budget workers 4');
+  assert.equal(budgets.get().cpuWorkers, 4);
+  assert.equal(await h.run('budget warp 9'), false);
+  assert.match(h.lines.at(-1).text, /Unknown budget/);
+  await h.run('budget reset');
+  assert.equal(budgets.get().profile, 'high');
+  assert.equal(budgets.get().overridden.length, 0);
+  assert.equal(await h.run('budget workers'), true);
+  assert.match(h.lines.at(-1).text, /^Usage: budget/);
 });

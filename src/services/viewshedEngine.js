@@ -5,12 +5,23 @@
  *  2. CPU worker pool (viewshed.worker.js): rows split across cores, off the
  *     main thread.
  *  3. Inline on the main thread (tests, or no Worker support).
- * All three return the same BAND codes.
+ * All three return the same BAND codes. With the `hybrid` budget on, a
+ * route or area runs on both: the CPU workers take a share of the observers
+ * (sized to their speed relative to the GPU) while the GPU draws the rest,
+ * and the two results merge with MAX.
+ *
+ * How much of the machine a run may use (workers, GPU work, grid sizes,
+ * draw batch size) comes from resourceBudgets.js and is read per run.
  */
 import { computeViewshedBand, computeViewshedMulti } from './viewshedMath.js';
 import { createGpuViewshed, gpuClass } from './viewshedGpu.js';
+import { resourceBudgets } from './resourceBudgets.js';
 
-/** Grid budgets: how many cells each engine handles comfortably in < 1 s. */
+/**
+ * Base grid budgets (the `balanced` profile): how many cells each engine
+ * handles comfortably in < 1 s. The budgets in force come from
+ * resourceBudgets (pointCellsGpu, wideCellsGpu, cpuCells).
+ */
 export const ENGINE_MAX_CELLS = Object.freeze({
   gpu: 1_000_000,
   cpu: 250_000,
@@ -22,7 +33,9 @@ export const ENGINE_MAX_CELLS = Object.freeze({
 
 /**
  * Sight-line steps (texel reads) each engine gets through in about a second
- * for a route or area. One observer with a reach of r cells costs about
+ * for a route or area, before the `gpuWorkScale` budget multiplies them
+ * (×4 on the `high` profile: a run of a few seconds with a finer grid and
+ * more observers). One observer with a reach of r cells costs about
  * π·r³/2 steps, so this sets how many observers a run can afford.
  */
 export const ENGINE_WORK = Object.freeze({
@@ -31,10 +44,26 @@ export const ENGINE_WORK = Object.freeze({
   cpu: 5e8, // worker pool, or a software GPU
 });
 
-/** Observers a run can afford with a reach of `reachCells` grid cells. */
-export function affordableObservers(work, reachCells) {
+/** CPU workers the ENGINE_WORK.cpu figure was measured with. */
+const CPU_WORK_WORKERS = 7;
+
+/**
+ * Observers a run can afford with a reach of `reachCells` grid cells, up to
+ * `cap` (the maxObservers budget).
+ */
+export function affordableObservers(work, reachCells, cap = 2000) {
   const per = (Math.PI * Math.max(1, reachCells) ** 3) / 2;
-  return Math.max(8, Math.min(2000, Math.floor(work / per)));
+  return Math.max(8, Math.min(cap, Math.floor(work / per)));
+}
+
+/**
+ * Share of a route's observers to give the CPU workers when they run
+ * alongside the GPU: their speed over the sum of both, never above half.
+ */
+export function cpuShare(gpuWork, workers) {
+  const cpu = ENGINE_WORK.cpu * (Math.max(0, workers) / CPU_WORK_WORKERS);
+  if (!(gpuWork > 0) || cpu <= 0) return 0;
+  return Math.min(0.5, cpu / (cpu + gpuWork));
 }
 
 /** GPU choices offered in the UI, mapped to WebGL power preferences. */
@@ -46,10 +75,9 @@ export const GPU_MODES = Object.freeze({
 
 export function createViewshedEngine({
   mode = 'dedicated',
-  workers = Math.max(
-    1,
-    Math.min(8, (globalThis.navigator?.hardwareConcurrency || 2) - 1),
-  ),
+  budgets = () => resourceBudgets.get(),
+  workers = null, // fixed worker count; null = the cpuWorkers budget
+  createGpu = createGpuViewshed,
   makeWorker = () =>
     new Worker(new URL('./viewshed.worker.js', import.meta.url), {
       type: 'module',
@@ -64,17 +92,24 @@ export function createViewshedEngine({
   function getGpu() {
     if (gpuFailed) return null;
     if (gpu === undefined)
-      gpu = createGpuViewshed({ powerPreference: GPU_MODES[gpuMode] });
+      gpu = createGpu({ powerPreference: GPU_MODES[gpuMode] });
     if (!gpu) gpuFailed = true;
     return gpu;
   }
 
+  const workerCount = () =>
+    Math.max(1, Math.floor(workers ?? budgets().cpuWorkers ?? 1));
+
+  /** The worker pool, rebuilt when the cpuWorkers budget changes. */
   function getPool() {
-    if (pool !== null) return pool;
+    const want = workerCount();
+    if (pool !== null && (pool.length === want || pool.failed)) return pool;
+    for (const w of pool ?? []) w.terminate?.();
     try {
-      pool = Array.from({ length: workers }, makeWorker);
+      pool = Array.from({ length: want }, makeWorker);
     } catch {
       pool = [];
+      pool.failed = true;
     }
     return pool;
   }
@@ -100,8 +135,7 @@ export function createViewshedEngine({
     });
   }
 
-  async function onCpuMulti(input) {
-    const list = getPool();
+  async function onCpuMulti(input, list = getPool()) {
     if (!list.length) {
       const { codes, used } = computeViewshedMulti(input);
       return { codes, used, engine: 'CPU' };
@@ -151,12 +185,72 @@ export function createViewshedEngine({
    *   cellXM, cellYM, observer, lowM, highM, targetM, mask)
    * @returns {Promise<{codes: Uint8Array, engine: string, ms: number}>}
    */
+  function gpuWorkOf(g) {
+    const kind = g ? gpuClass(g.renderer) : 'cpu';
+    if (kind === 'integrated' || kind === 'unified')
+      return ENGINE_WORK.integrated;
+    return kind === 'software' || kind === 'cpu'
+      ? ENGINE_WORK.cpu
+      : ENGINE_WORK.gpu;
+  }
+
+  /**
+   * GPU and CPU workers together on a route or area: the workers get their
+   * share of the observers first (they run in parallel threads), the GPU
+   * draws the rest on this thread, then both merge.
+   */
+  async function computeHybrid(g, input, b, t0) {
+    const list = getPool();
+    const share = cpuShare(gpuWorkOf(g), list.length);
+    const n = input.observers.length;
+    const cpuN = Math.floor(n * share);
+    // Each worker gets its own copy of the heights; keep the copies under
+    // about a gigabyte.
+    const bytes = input.width * input.height * 8;
+    const fit = Math.max(1, Math.floor(1024 ** 3 / Math.max(1, bytes)));
+    // At least four observers per worker, so a thread is worth its copy.
+    const use = list.slice(0, Math.min(list.length, fit, Math.floor(cpuN / 4)));
+    if (!use.length) return null;
+    // Spread the CPU's observers along the shape so both halves stay even.
+    const step = n / cpuN;
+    const cpuObs = [];
+    const gpuObs = [];
+    let nextPick = 0;
+    for (let i = 0; i < n; i++) {
+      if (i >= Math.round(nextPick) && cpuObs.length < cpuN) {
+        cpuObs.push(input.observers[i]);
+        nextPick += step;
+      } else gpuObs.push(input.observers[i]);
+    }
+    const cpuRun = onCpuMulti({ ...input, observers: cpuObs }, use);
+    const codes = g.compute({
+      ...input,
+      observers: gpuObs,
+      batchCells: b.gpuBatchCells,
+    });
+    const cpu = await cpuRun;
+    const c = cpu.codes;
+    for (let i = 0; i < codes.length; i++) if (c[i] > codes[i]) codes[i] = c[i];
+    return {
+      codes,
+      used: (codes.used ?? 0) + cpu.used,
+      engine: `GPU (${g.renderer}) + CPU ×${use.length}`,
+      split: { gpu: gpuObs.length, cpu: cpuObs.length },
+      ms: performance.now() - t0,
+    };
+  }
+
   async function compute(input) {
     const t0 = performance.now();
     const g = getGpu();
+    const b = budgets();
     if (g && input.width <= g.maxSide && input.height <= g.maxSide) {
       try {
-        const codes = g.compute(input);
+        if (b.hybrid && input.observers?.length >= 32) {
+          const out = await computeHybrid(g, input, b, t0);
+          if (out) return out;
+        }
+        const codes = g.compute({ ...input, batchCells: b.gpuBatchCells });
         return {
           codes,
           used: codes.used,
@@ -177,21 +271,35 @@ export function createViewshedEngine({
     compute,
     /** Cell budget for the engine compute() will use. */
     get maxCells() {
-      return getGpu() ? ENGINE_MAX_CELLS.gpu : ENGINE_MAX_CELLS.cpu;
+      const g = getGpu();
+      const b = budgets();
+      return g ? Math.min(b.pointCellsGpu, g.maxSide * g.maxSide) : b.cpuCells;
     },
-    /** Sight-line steps per run for routes and areas (see ENGINE_WORK). */
+    /**
+     * Sight-line steps per run for routes and areas (see ENGINE_WORK),
+     * times the gpuWorkScale budget; on the CPU, scaled by the worker count.
+     */
     get work() {
       const g = getGpu();
-      const kind = g ? gpuClass(g.renderer) : 'cpu';
-      if (kind === 'integrated' || kind === 'unified')
-        return ENGINE_WORK.integrated;
-      return kind === 'software' || kind === 'cpu'
-        ? ENGINE_WORK.cpu
-        : ENGINE_WORK.gpu;
+      const b = budgets();
+      const base = g
+        ? gpuWorkOf(g)
+        : ENGINE_WORK.cpu * (workerCount() / CPU_WORK_WORKERS);
+      return base * b.gpuWorkScale;
+    },
+    /** Observer cap for routes and areas (maxObservers budget). */
+    get maxObservers() {
+      return budgets().maxObservers;
     },
     /** Cell budget for routes and areas (reach-limited observers). */
     get maxCellsWide() {
-      return getGpu() ? ENGINE_MAX_CELLS.gpuWide : ENGINE_MAX_CELLS.cpuWide;
+      const g = getGpu();
+      const b = budgets();
+      return g ? Math.min(b.wideCellsGpu, g.maxSide * g.maxSide) : b.cpuCells;
+    },
+    /** CPU workers a CPU or hybrid run uses. */
+    get workers() {
+      return workerCount();
     },
     get kind() {
       return getGpu() ? 'GPU' : 'CPU';

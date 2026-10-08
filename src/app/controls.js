@@ -17,6 +17,10 @@ import { mountSiteTray } from '../ui/siteTray.js';
 import { captureView, createPhoneLink } from '../services/phoneLink.js';
 import { mountPhoneTray } from '../ui/phoneTray.js';
 import { mountViewshedTray } from '../ui/viewshedTray.js';
+import {
+  attachSceneBudgets,
+  resourceBudgets,
+} from '../services/resourceBudgets.js';
 
 /** Construct the existing controls and camera presentation. */
 export function createApplicationControls({
@@ -84,7 +88,11 @@ export function createApplicationControls({
     },
   });
   defer(() => viewshedOrbit.destroy());
+  // How much of the machine to use (viewshed CPU/GPU, tile and height
+  // caches): VIEWSHED → Machine use, Features Code `budget`.
+  defer(attachSceneBudgets(viewer.scene, resourceBudgets));
   const site = Object.freeze({
+    budgets: resourceBudgets,
     boundary: siteBoundary,
     orbit: siteOrbit,
     contours: siteContours,
@@ -141,6 +149,7 @@ export function createApplicationControls({
   defer(() => phoneTray.destroy());
   const viewshedTray = mountViewshedTray({
     viewshed: siteViewshed,
+    budgets: resourceBudgets,
     orbit: viewshedOrbit,
     boundary: siteBoundary,
     panels: popoutPanels,

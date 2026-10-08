@@ -4,12 +4,15 @@
  * circle) with the same click tools as SITE, set the eye band (default
  * 0–2.5 m) and how far to look (reach, default 1 km), and orbit the result.
  * Every section (or the whole tab) pops out into a movable panel. Features
- * Code `viewshed …` runs the same service.
+ * Code `viewshed …` runs the same service. "Machine use" sets how much of
+ * the computer the app may use (resourceBudgets.js; Features Code
+ * `budget …`).
  */
 import { parseLength, SNAP_STEPS_DEG } from '../services/surveyGeometry.js';
 import { dedicatedGpuAdvice } from '../services/viewshedGpu.js';
 import { parseHeightM, parseHeightRange } from '../services/viewshedMath.js';
 import { parseShapeText } from '../services/viewshedShapes.js';
+import { BUDGET_PROFILES, budgetLine } from '../services/resourceBudgets.js';
 
 const fmtArea = (m2) =>
   m2 >= 1e6
@@ -61,6 +64,7 @@ export function mountViewshedTray({
   dock,
   onOpenFeaturesCode,
   panels = null,
+  budgets = null,
 } = {}) {
   const host = dock ?? document.getElementById('command-dock');
   const item = document.createElement('div');
@@ -189,6 +193,44 @@ export function mountViewshedTray({
           <button type="button" data-vs="record" disabled>Record GIF</button>
         </div>
         <p class="site-tray-status" data-vs="orbit-status"></p>
+      </section>
+      <section class="site-tray-section" aria-labelledby="vt-machine-h" data-vs="machine" hidden>
+        <h3 id="vt-machine-h">Machine use <small>CPU, GPU and RAM the app may take</small></h3>
+        <div class="site-tray-row">
+          <label class="site-tray-select">Profile
+            <select data-vs="profile" aria-label="How much of the computer to use">
+              ${Object.keys(BUDGET_PROFILES)
+                .map(
+                  (k) =>
+                    `<option value="${k}">${k[0].toUpperCase()}${k.slice(1)}${k === 'balanced' ? ' (old default)' : ''}</option>`,
+                )
+                .join('')}
+            </select>
+          </label>
+          <label class="site-tray-select">CPU threads
+            <input type="number" class="site-tray-input" data-vs="workers" min="1" max="64" step="1" size="4"
+              aria-label="CPU worker threads for the viewshed" title="Worker threads for sight lines. High uses every core but one." />
+          </label>
+          <label class="site-tray-switch" title="Routes and areas run on the GPU and the CPU threads at the same time">
+            <input type="checkbox" data-vs="hybrid" /> GPU + CPU together
+          </label>
+        </div>
+        <div class="site-tray-row">
+          <label class="site-tray-select">GPU work
+            <input type="text" class="site-tray-input" data-vs="gpuwork" size="4"
+              aria-label="GPU work multiplier" title="How much sight-line work a route or area run may take: ×1 is about a second; higher means finer cells and more observers" />
+          </label>
+          <label class="site-tray-select">3D tile cache
+            <input type="text" class="site-tray-input" data-vs="tilecache" size="6"
+              aria-label="Google 3D tile RAM cache" title="RAM for Google 3D tiles (4 GB, 4096 MB). Resizes at once." />
+          </label>
+          <label class="site-tray-select">Height grids
+            <input type="text" class="site-tray-input" data-vs="gridcache" size="6"
+              aria-label="Viewshed height grid RAM cache" title="RAM for viewshed height grids, so going back to an area skips the download" />
+          </label>
+          <button type="button" data-vs="budget-reset" title="Back to the High profile">Reset</button>
+        </div>
+        <p class="site-tray-status" data-vs="budget-status"></p>
       </section>
       <p class="site-tray-foot">Same actions in <button type="button" class="site-tray-link" data-vs="open-fc">Features Code</button> · type <code>help</code></p>
     </div>`;
@@ -354,6 +396,62 @@ export function mountViewshedTray({
       say('orbit-status', `Saved ${name}`, 'ok');
     }),
   );
+  // ---- machine use ----
+  const gbText = (mb) =>
+    mb >= 1024 && mb % 256 === 0 ? `${mb / 1024} GB` : `${mb} MB`;
+  function syncBudgets(b = budgets.get()) {
+    $('profile').value = b.profile;
+    if (document.activeElement !== $('workers'))
+      $('workers').value = b.cpuWorkers;
+    $('workers').max = String(Math.max(64, b.cores));
+    $('hybrid').checked = b.hybrid;
+    if (document.activeElement !== $('gpuwork'))
+      $('gpuwork').value = `×${b.gpuWorkScale}`;
+    if (document.activeElement !== $('tilecache'))
+      $('tilecache').value = gbText(b.tilesetCacheMB);
+    if (document.activeElement !== $('gridcache'))
+      $('gridcache').value = gbText(b.gridCacheMB);
+    say('budget-status', budgetLine(b), 'ok');
+  }
+  let offBudgets = null;
+  if (budgets) {
+    $('machine').hidden = false;
+    const setBudget = (name, read) =>
+      guard('budget-status', () => {
+        budgets.set(name, read());
+      });
+    $('profile').addEventListener(
+      'change',
+      guard('budget-status', () => budgets.setProfile($('profile').value)),
+    );
+    $('workers').addEventListener(
+      'change',
+      setBudget('workers', () => $('workers').value),
+    );
+    $('hybrid').addEventListener(
+      'change',
+      setBudget('hybrid', () => $('hybrid').checked),
+    );
+    $('gpuwork').addEventListener(
+      'change',
+      setBudget('gpu', () => $('gpuwork').value.replace(/^\s*[×x]/i, '')),
+    );
+    $('tilecache').addEventListener(
+      'change',
+      setBudget('cache', () => $('tilecache').value),
+    );
+    $('gridcache').addEventListener(
+      'change',
+      setBudget('grids', () => $('gridcache').value),
+    );
+    $('budget-reset').addEventListener(
+      'click',
+      guard('budget-status', () => budgets.reset()),
+    );
+    offBudgets = budgets.onChange((b) => syncBudgets(b));
+    syncBudgets();
+  }
+
   $('open-fc').addEventListener('click', () => {
     setOpen(false);
     onOpenFeaturesCode?.();
@@ -451,6 +549,7 @@ export function mountViewshedTray({
     close: () => setOpen(false),
     destroy() {
       off();
+      offBudgets?.();
       window.removeEventListener('resize', onResize);
       item.remove();
       panel.remove();

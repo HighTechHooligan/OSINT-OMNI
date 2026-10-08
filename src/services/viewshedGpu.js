@@ -215,6 +215,7 @@ export function createGpuViewshed({
     refraction,
     mask = null,
     maxDistM = Infinity,
+    batchCells = 262_144,
   }) {
     if (width > maxSide || height > maxSide)
       throw new RangeError(`grid larger than ${maxSide} px`);
@@ -300,13 +301,15 @@ export function createGpuViewshed({
         cellYM,
       );
       // Draw in bands of rows: each draw stays short, so a slow GPU never
-      // trips the driver's watchdog on a big grid.
-      const band = Math.max(1, Math.floor(262_144 / (c1 - c0)));
+      // trips the driver's watchdog on a big grid. `batchCells` (the
+      // gpuBatchCells budget) sets how many cells one draw covers: bigger
+      // batches keep a dedicated GPU busier between flushes.
+      const band = Math.max(1, Math.floor(batchCells / (c1 - c0)));
       for (let y = r0; y < r1; y += band) {
         gl.scissor(c0, y, c1 - c0, Math.min(band, r1 - y));
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
       }
-      if (used % 64 === 0) gl.flush();
+      if (used % Math.max(16, Math.round(batchCells / 4096)) === 0) gl.flush();
     }
     gl.disable(gl.SCISSOR_TEST);
     gl.disable(gl.BLEND);
