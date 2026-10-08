@@ -9,6 +9,7 @@ import { createSiteRoutes } from '../services/siteRoutes.js';
 import { geocodeKeyless } from '../keylessGeocoder.js';
 import { mountRoutesTray } from '../ui/routesTray.js';
 import { createSiteBuildings } from '../services/siteBuildings.js';
+import { createInspectionPricing } from '../services/inspectionPricing.js';
 import { createSiteViewshed } from '../services/siteViewshed.js';
 import { createAircraftDossier } from '../services/aircraftDossier.js';
 import { createLocationResearch } from '../tools/locationResearch.js';
@@ -83,6 +84,9 @@ export function createApplicationControls({
       }),
   });
   defer(() => siteBuildings.destroy());
+  // Drone-inspection pricing: surface areas of the selected buildings.
+  const sitePricing = createInspectionPricing({ buildings: siteBuildings });
+  defer(() => sitePricing.destroy());
   // The viewshed has its own tab: a point, route or area observer, with its
   // own orbit around the observer and its reach.
   const siteViewshed = createSiteViewshed(viewer, { boundary: siteBoundary });
@@ -105,6 +109,7 @@ export function createApplicationControls({
     contours: siteContours,
     routes: siteRoutes,
     buildings: siteBuildings,
+    pricing: sitePricing,
     viewshed: siteViewshed,
     viewshedOrbit,
   });

@@ -1,13 +1,15 @@
 /**
  * SITE: dock popdown with the GUI for every site feature — boundary (draw,
  * import, export, clear), contours (on/off + 2–100 ft slider), canopy,
- * building mode (topography ⇄ clickable buildings/roads/parks) and
- * orbit/record. The viewshed has its own VIEWSHED tab (viewshedTray.js). Each section (or the whole tray) can pop out into a
- * movable panel and from there into its own window. Features Code exposes the same actions as commands; both
- * call the same services.
+ * building mode (topography ⇄ clickable buildings/roads/parks), drone
+ * inspection pricing and orbit/record. The viewshed has its own VIEWSHED tab
+ * (viewshedTray.js). Each section (or the whole tray) can pop out into a
+ * movable panel and from there into its own window. Features Code exposes the
+ * same actions as commands; both call the same services.
  */
 import { openCoordinatePaste } from './coordinatePaste.js';
 import { parseLength, SNAP_STEPS_DEG } from '../services/surveyGeometry.js';
+import { fmtMoney, fmtUnitArea } from '../services/surfaceMath.js';
 import {
   CONTOUR_MAX_FT,
   CONTOUR_MIN_FT,
@@ -31,7 +33,7 @@ export function mountSiteTray({
   onOpenFeaturesCode,
   panels = null,
 } = {}) {
-  const { boundary, orbit, contours, buildings } = site;
+  const { boundary, orbit, contours, buildings, pricing } = site;
   const host = dock ?? document.getElementById('command-dock');
   const item = document.createElement('div');
   item.id = 'site-tray';
@@ -138,6 +140,36 @@ export function mountSiteTray({
         </p>
         <p class="site-tray-note">Click a building, road or park for its dossier. Dossiers open as pop-outs; open several, drag them, or pop one into its own window.</p>
       </section>
+
+      <section class="site-tray-section" aria-labelledby="st-price-h">
+        <h3 id="st-price-h">Inspection pricing <small>selected buildings</small></h3>
+        <div class="site-tray-row">
+          <label class="site-tray-select">Rate per
+            <select data-st="price-unit" aria-label="Rate area unit">
+              <option value="ft2">ft²</option>
+              <option value="m2">m²</option>
+            </select>
+          </label>
+          <label class="site-tray-select">Roof
+            <input type="text" class="site-tray-input" data-st="price-roof" inputmode="decimal" size="5" aria-label="Roof rate per area unit" />
+          </label>
+          <label class="site-tray-select">Walls
+            <input type="text" class="site-tray-input" data-st="price-wall" inputmode="decimal" size="5" aria-label="Wall (facade) rate per area unit" />
+          </label>
+          <label class="site-tray-select">Min/bldg
+            <input type="text" class="site-tray-input" data-st="price-min" inputmode="decimal" size="5" aria-label="Minimum price per building" title="Per-building floor, e.g. a call-out fee; 0 = none" />
+          </label>
+        </div>
+        <div class="site-tray-row">
+          <button type="button" data-st="price-all" disabled>Select all buildings</button>
+          <button type="button" data-st="price-clear" disabled>Clear selection</button>
+          <button type="button" data-st="price-csv" disabled>Copy CSV</button>
+        </div>
+        <p class="site-tray-status" data-st="price-status"></p>
+        <div class="site-tray-quote" data-st="price-table"></div>
+        <p class="site-tray-note">Click a building to select it; Shift- or Ctrl-click to add or remove more. Roof = footprint tilted by its OSM roof shape (flat when unknown); walls = perimeter × eave height.</p>
+      </section>
+
 
       <section class="site-tray-section" aria-labelledby="st-orbit-h">
         <h3 id="st-orbit-h">Orbit</h3>
@@ -411,6 +443,112 @@ export function mountSiteTray({
     });
   }
 
+  // ---- inspection pricing ----
+  function syncPricing() {
+    if (!pricing) return;
+    const q = pricing.quote();
+    const r = q.rates;
+    const bstate = buildings.describe();
+    const doc = $('price-table').ownerDocument;
+    // Leave a field alone while it is being typed in.
+    const setField = (key, value) => {
+      if (doc.activeElement !== $(key)) $(key).value = String(value);
+    };
+    $('price-unit').value = r.unit;
+    setField('price-roof', r.roof);
+    setField('price-wall', r.wall);
+    setField('price-min', r.minimum);
+    $('price-all').disabled = !bstate.on || !bstate.counts.buildings;
+    $('price-clear').disabled = !q.rows.length;
+    $('price-csv').disabled = !q.rows.length;
+    const table = $('price-table');
+    table.replaceChildren();
+    if (!bstate.on)
+      return say(
+        'price-status',
+        'Switch View to Buildings, then select buildings',
+      );
+    if (!q.rows.length) return say('price-status', 'No buildings selected');
+    const t = q.totals;
+    say(
+      'price-status',
+      `${t.count} building${t.count === 1 ? '' : 's'} · ${fmtUnitArea(t.totalM2, r.unit)} · ${fmtMoney(t.price, r.currency)}${t.assumed ? ` · ${t.assumed} with assumed roof/height` : ''}`,
+      'ok',
+    );
+    const el = (tag, text, cls) => {
+      const node = doc.createElement(tag);
+      if (text != null) node.textContent = text;
+      if (cls) node.className = cls;
+      return node;
+    };
+    const tbl = el('table');
+    const head = el('tr');
+    for (const h of ['Building', 'Roof', 'Walls', 'Total', 'Price'])
+      head.appendChild(el('th', h));
+    tbl.appendChild(el('thead')).appendChild(head);
+    const body = tbl.appendChild(el('tbody'));
+    const area = (m2) => fmtUnitArea(m2, r.unit);
+    for (const row of q.rows) {
+      const tr = el('tr');
+      const name = el(
+        'td',
+        row.record.tags?.name ||
+          `Building ${row.id.replace(/^osm-|^mesh-/, '')}`,
+      );
+      if (row.surfaces.assumed.length) {
+        name.appendChild(el('span', ' *', 'site-tray-quote-flag'));
+        name.title = `Assumed: ${row.surfaces.assumed.join(', ')}`;
+      }
+      tr.appendChild(name);
+      tr.appendChild(el('td', area(row.surfaces.roofM2)));
+      tr.appendChild(el('td', area(row.surfaces.wallM2)));
+      tr.appendChild(el('td', area(row.surfaces.totalM2)));
+      tr.appendChild(el('td', fmtMoney(row.price.price, r.currency)));
+      tr.title = 'Fly to this building';
+      tr.addEventListener('click', () => buildings.flyTo(row.record));
+      body.appendChild(tr);
+    }
+    const foot = el('tr');
+    foot.appendChild(el('td', `Total (${t.count})`));
+    foot.appendChild(el('td', area(t.roofM2)));
+    foot.appendChild(el('td', area(t.wallM2)));
+    foot.appendChild(el('td', area(t.totalM2)));
+    foot.appendChild(el('td', fmtMoney(t.price, r.currency)));
+    tbl.appendChild(el('tfoot')).appendChild(foot);
+    table.appendChild(tbl);
+  }
+  if (!pricing)
+    panel.querySelector('[aria-labelledby="st-price-h"]').hidden = true;
+  else {
+    $('price-unit').addEventListener('change', () =>
+      pricing.setRates({ unit: $('price-unit').value }),
+    );
+    for (const [key, field] of [
+      ['price-roof', 'roof'],
+      ['price-wall', 'wall'],
+      ['price-min', 'minimum'],
+    ]) {
+      $(key).addEventListener('input', () => {
+        const v = Number($(key).value.replace(/[$,\s]/g, ''));
+        if (Number.isFinite(v) && v >= 0) pricing.setRates({ [field]: v });
+      });
+      $(key).addEventListener('change', syncPricing);
+    }
+    $('price-all').addEventListener('click', () =>
+      buildings.selectAllBuildings(),
+    );
+    $('price-clear').addEventListener('click', () =>
+      buildings.clearSelection(),
+    );
+    $('price-csv').addEventListener(
+      'click',
+      guard('price-status', async () => {
+        await navigator.clipboard.writeText(pricing.csv());
+        say('price-status', 'Quote copied as CSV', 'ok');
+      }),
+    );
+  }
+
   // ---- pop-outs: any section, or the whole tray, into a movable panel ----
   const sectionTitle = (section) =>
     section.querySelector('h3')?.firstChild?.textContent?.trim() || 'SITE';
@@ -507,6 +645,7 @@ export function mountSiteTray({
       syncBoundary();
       syncContours();
       syncBuildings();
+      syncPricing();
       place();
     }
   };
@@ -536,6 +675,8 @@ export function mountSiteTray({
   });
   const offContours = contours.onChange((state) => syncContours(state));
   const offBuildings = buildings?.onChange((state) => syncBuildings(state));
+  const offPricing = pricing?.onChange(() => syncPricing());
+  syncPricing();
 
   return {
     open: () => setOpen(true),
@@ -545,6 +686,7 @@ export function mountSiteTray({
       offBoundary();
       offContours();
       offBuildings?.();
+      offPricing?.();
       window.removeEventListener('resize', onResize);
       item.remove();
       panel.remove();

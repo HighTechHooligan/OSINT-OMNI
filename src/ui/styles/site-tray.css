@@ -339,3 +339,56 @@ body.recording-mode .site-tray-panel,
 body.ui-clean-view .site-tray-panel {
   display: none;
 }
+
+/* Inspection pricing: quote table for the selected buildings */
+.site-tray-quote {
+  max-height: 14rem;
+  overflow: auto;
+}
+
+.site-tray-quote table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.site-tray-quote th,
+.site-tray-quote td {
+  padding: 0.2rem 0.35rem;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.site-tray-quote th:first-child,
+.site-tray-quote td:first-child {
+  max-width: 9rem;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+}
+
+.site-tray-quote th {
+  color: var(--text-secondary);
+  font-weight: 500;
+  border-bottom: 1px solid rgba(var(--accent-rgb), 0.25);
+}
+
+.site-tray-quote tbody tr {
+  cursor: pointer;
+}
+
+.site-tray-quote tbody tr:hover {
+  background: var(--accent-fade);
+}
+
+.site-tray-quote tfoot td {
+  color: var(--accent);
+  font-weight: 600;
+  border-top: 1px solid rgba(var(--accent-rgb), 0.25);
+}
+
+.site-tray-quote-flag {
+  color: var(--text-secondary);
+}

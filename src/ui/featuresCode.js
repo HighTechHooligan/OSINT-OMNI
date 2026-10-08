@@ -14,6 +14,7 @@ import { parseShapeText } from '../services/viewshedShapes.js';
 import { resultLine } from './viewshedTray.js';
 import { BUDGET_PROFILES, budgetLine } from '../services/resourceBudgets.js';
 import { parseHeightM, parseHeightRange } from '../services/viewshedMath.js';
+import { fmtMoney, fmtUnitArea } from '../services/surfaceMath.js';
 import { openCoordinatePaste } from './coordinatePaste.js';
 import {
   describeSummary,
@@ -47,6 +48,14 @@ Buildings (only inside the site boundary)
   buildings mesh | osm     find buildings from the 3D mesh scan or OSM only
   dossier <n>              open the dossier for building n of "buildings list"
   buildings list           list what building mode found
+Inspection pricing (selected buildings; Shift/Ctrl-click to add)
+  price                    roof, walls, total and price per selected building
+  price all | clear        select every building found, or none
+  price add | drop <n>     add or remove building n of "buildings list"
+  price roof | walls <rate>  rate per area unit (also: price rate <rate>)
+  price min <amount>       per-building minimum (0 = none)
+  price unit ft | m        rates per ft² or per m²
+  price csv                print the quote as CSV
   panels close             close every pop-out panel
 Viewshed (VIEWSHED tab; reach 1 km by default)
   viewshed [eye]           click the observer spot; eye height (1.7m, 30ft)
@@ -218,6 +227,7 @@ export function createFeatureCommands({
     buildings,
     viewshed,
     viewshedOrbit,
+    pricing,
     routes,
   } = site;
   function viewshedLine(state) {
@@ -696,6 +706,77 @@ export function createFeatureCommands({
       }
       print('Click the observer spot. Esc cancels.', 'dim');
       return viewshedLine(await viewshed.pickObserver(opts));
+    },
+    price([first, second]) {
+      if (!pricing || !buildings)
+        return print('Inspection pricing is not available', 'err');
+      const action = String(first ?? '').toLowerCase();
+      const list = buildings.list().filter((r) => r.kind === 'building');
+      const amount = (text) => {
+        const v = Number(String(text ?? '').replace(/[$,]/g, ''));
+        return Number.isFinite(v) && v >= 0 ? v : null;
+      };
+      if (action === 'all') {
+        if (!buildings.describe().on)
+          return print('No buildings yet. Run "buildings on".', 'err');
+        buildings.selectAllBuildings();
+      } else if (action === 'clear' || switchArg(action) === false) {
+        buildings.clearSelection();
+        return print('Selection cleared', 'ok');
+      } else if (action === 'add' || action === 'drop') {
+        const n = Number(second);
+        const record = Number.isInteger(n) ? list[n - 1] : null;
+        if (!record)
+          return print(
+            `Usage: price ${action} <n> (see "buildings list")`,
+            'err',
+          );
+        buildings.toggle(record.id, action === 'add');
+      } else if (['roof', 'walls', 'wall', 'rate', 'min'].includes(action)) {
+        const v = amount(second);
+        if (v === null)
+          return print(`Usage: price ${action} <amount>, e.g. 0.15`, 'err');
+        const field =
+          action === 'min' ? 'minimum' : action === 'roof' ? 'roof' : 'wall';
+        pricing.setRates(
+          action === 'rate' ? { roof: v, wall: v } : { [field]: v },
+        );
+      } else if (action === 'unit') {
+        const unit = /^m/.test(second ?? '')
+          ? 'm2'
+          : /^f/.test(second ?? '')
+            ? 'ft2'
+            : null;
+        if (!unit) return print('Usage: price unit ft | m', 'err');
+        pricing.setRates({ unit });
+      } else if (action === 'csv') {
+        if (!pricing.quote().rows.length)
+          return print('No buildings selected', 'dim');
+        return print(pricing.csv(), 'dim');
+      } else if (action)
+        return print('Usage: see "help" under Inspection pricing', 'err');
+      const q = pricing.quote();
+      const r = q.rates;
+      const per = r.unit === 'm2' ? 'm²' : 'ft²';
+      const rateLine = `Rates: roof ${fmtMoney(r.roof, r.currency)}/${per} · walls ${fmtMoney(r.wall, r.currency)}/${per}${r.minimum ? ` · min ${fmtMoney(r.minimum, r.currency)}/building` : ''}`;
+      if (!q.rows.length)
+        return print(
+          `${rateLine}\nNo buildings selected. Click buildings (Shift-click for more) or run "price all".`,
+          'dim',
+        );
+      const area = (m2) => fmtUnitArea(m2, r.unit);
+      const t = q.totals;
+      print(
+        [
+          rateLine,
+          ...q.rows.map(
+            ({ record, surfaces: x, price: p }) =>
+              `${list.indexOf(record) + 1}. ${record.tags?.name || record.id} · roof ${area(x.roofM2)} · walls ${area(x.wallM2)} · total ${area(x.totalM2)} · ${fmtMoney(p.price, r.currency)}${x.assumed.length ? ` (assumed: ${x.assumed.join(', ')})` : ''}`,
+          ),
+          `Total ${t.count} building${t.count === 1 ? '' : 's'}: roof ${area(t.roofM2)} · walls ${area(t.wallM2)} · ${area(t.totalM2)} · ${fmtMoney(t.price, r.currency)}`,
+        ].join('\n'),
+        'ok',
+      );
     },
     dossier([n]) {
       const list = buildings?.list().filter((r) => r.kind === 'building') ?? [];
