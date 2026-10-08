@@ -50,6 +50,19 @@ export async function fetchBytes(url) {
   return { status: res.status, body: data };
 }
 
+/**
+ * JSON request for the OMNI host. Native HTTP on the phone: the host serves no
+ * CORS headers, and the app's own origin is https://localhost.
+ */
+export async function httpJson({ method, url, headers = {}, body }) {
+  if (isNative()) {
+    const res = await CapacitorHttp.request({ method, url, headers, data: body, responseType: 'json', connectTimeout: 8000, readTimeout: 15000 });
+    return { status: res.status, data: res.data };
+  }
+  const res = await fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(15000) });
+  return { status: res.status, data: await res.text() };
+}
+
 function base64ToBytes(b64) {
   const bin = atob(b64);
   const out = new Uint8Array(bin.length);

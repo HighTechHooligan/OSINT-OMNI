@@ -1,8 +1,11 @@
 # OMNI Portal (phone app)
 
 The phone side of OSINT OMNI: an Android/iOS app that will be the portal to
-your OMNI host from any network. Secure pairing and the encrypted connection
-to the host come later; the first tab is **Maps**.
+your OMNI host from any network. The first tab is **Maps**. The **Host** tab
+pairs the phone with the desktop on the same network, using the six-digit code
+from PHONE › Pair a phone (the phone-remote server, `npm run dev:lan`). The
+encrypted connection for use away from home comes later; until then the app
+allows plain http so it can reach the desktop's LAN address.
 
 ## Maps tab
 

@@ -1,38 +1,129 @@
 import { h, toast } from './dom.js';
 import { cleanUrl } from '../lib/settings.js';
-import { fetchBytes } from '../lib/platform.js';
+import { fetchBytes, httpJson } from '../lib/platform.js';
+import { createHostLink, isPrivateHost, loadLink, saveLink } from '../lib/hostLink.js';
 
 /**
- * Host tab: where the phone will connect to the OMNI host from another
- * network. Secure handoff (pairing, keys, tunnel) is designed separately;
- * today this only stores the host address, checks it answers, and sends
- * camera data through the host's cached proxy when set.
+ * Host tab: pair this phone with the OMNI host (the desktop's PHONE › Pair a
+ * phone code) and keep the host address that camera data goes through.
+ * Pairing works on the same network today; the secure handoff for other
+ * networks comes later.
  */
 export function mountHost(root, services) {
-  const input = h('input', { type: 'url', placeholder: 'https://omni.example.net', value: services.settings.hostUrl, 'aria-label': 'Host address' });
-  const status = h('p.muted', { text: services.settings.hostUrl ? 'Not checked yet.' : 'No host set. Cameras come straight from the public extract.' });
+  const link = createHostLink({ http: httpJson });
+  let paired = loadLink();
 
-  async function save() {
-    const v = cleanUrl(input.value);
-    if (v == null) return toast('Enter an http(s) address.');
-    services.updateSettings({ hostUrl: v });
-    status.textContent = v ? 'Saved. Checking…' : 'Host cleared.';
-    if (v) check();
+  const hostInput = h('input', {
+    type: 'url',
+    inputmode: 'url',
+    placeholder: '192.168.1.20:4173',
+    value: services.settings.hostUrl,
+    'aria-label': 'Host address',
+    autocapitalize: 'off',
+    autocorrect: 'off',
+  });
+  const codeInput = h('input', { type: 'text', inputmode: 'numeric', maxlength: 7, placeholder: '6-digit code', 'aria-label': 'Pairing code', autocomplete: 'one-time-code' });
+  const nameInput = h('input', { type: 'text', value: 'OMNI Portal', maxlength: 40, 'aria-label': 'Phone name' });
+  const pairButton = h('button.primary', { text: 'Pair', onclick: pair });
+  const status = h('p.muted');
+  const pairedBox = h('div');
+  const warning = h('p.warn', { hidden: true });
+
+  function readHost() {
+    const v = cleanUrl(hostInput.value);
+    if (!v) {
+      toast('Enter the address from PHONE on the computer, like 192.168.1.20:4173.');
+      return null;
+    }
+    hostInput.value = v;
+    if (v !== services.settings.hostUrl) services.updateSettings({ hostUrl: v });
+    showWarning(v);
+    return v;
+  }
+
+  function showWarning(v) {
+    const plainPublic = v.startsWith('http://') && !isPrivateHost(v);
+    warning.hidden = !plainPublic;
+    warning.textContent = plainPublic ? 'This address is plain http on the open internet. Pair only on your own network until the secure connection is ready.' : '';
+  }
+
+  async function pair() {
+    const host = readHost();
+    if (!host) return;
+    pairButton.disabled = true;
+    status.textContent = 'Pairing…';
+    try {
+      paired = await link.pair(host, codeInput.value, nameInput.value);
+      saveLink(paired);
+      codeInput.value = '';
+      status.textContent = 'Paired.';
+      render();
+      check();
+    } catch (error) {
+      status.textContent = explain(error);
+    } finally {
+      pairButton.disabled = false;
+    }
   }
 
   async function check() {
-    const host = services.settings.hostUrl;
-    if (!host) return;
-    try {
-      const res = await Promise.race([
-        fetchBytes(`${host}/api/alpr/us.json`),
-        new Promise((_, reject) => setTimeout(() => reject(new Error('no answer in 6 s')), 6000)),
-      ]);
-      const ok = res.status >= 200 && res.status < 300;
-      status.textContent = ok ? 'Host answered. Camera data now comes through it.' : `Host answered with HTTP ${res.status}.`;
-    } catch (error) {
-      status.textContent = `Can't reach the host: ${error.message}`;
+    if (!paired) {
+      const host = readHost();
+      if (!host) return;
+      status.textContent = 'Checking…';
+      try {
+        const res = await fetchBytes(`${host}/api/alpr/us.json`);
+        status.textContent = res.status >= 200 && res.status < 300 ? 'The host answers. Enter the code from the computer to pair.' : `The host answered HTTP ${res.status}.`;
+      } catch (error) {
+        status.textContent = explain(error);
+      }
+      return;
     }
+    status.textContent = 'Checking…';
+    try {
+      const s = await link.status(paired);
+      if (!s.paired) {
+        status.textContent = `${s.error} (The computer forgets phones when its server restarts.)`;
+        paired = null;
+        saveLink(null);
+        render();
+        return;
+      }
+      status.textContent = s.desktopOnline ? 'Connected. The desktop app is open.' : 'Connected to the host. The desktop app is not open right now.';
+    } catch (error) {
+      status.textContent = explain(error);
+    }
+  }
+
+  function forget() {
+    paired = null;
+    saveLink(null);
+    status.textContent = 'This phone forgot the pairing. Revoke it on the computer under PHONE too.';
+    render();
+  }
+
+  function render() {
+    pairedBox.replaceChildren(
+      paired
+        ? h(
+            'div.list',
+            {},
+            h('div', {}, h('strong', { text: `Paired as ${paired.device?.name || 'this phone'}` }), h('small.muted', { text: ` · ${paired.hostUrl} · since ${new Date(paired.pairedAt).toLocaleString()}` })),
+            h('div.row', {}, h('button', { text: 'Check connection', onclick: check }), h('button.danger', { text: 'Forget', onclick: forget })),
+          )
+        : h(
+            'div.pair-form',
+            {},
+            h('ol.howto', {}, [
+              'On the computer, start OMNI with npm run dev:lan.',
+              'Press PHONE in the dock, then Pair a phone.',
+              'Type the address it shows (the /phone/ part is optional) and the 6-digit code here.',
+            ].map((t) => h('li', { text: t }))),
+            h('label.field', {}, h('span', { text: 'Pairing code' }), codeInput),
+            h('label.field', {}, h('span', { text: 'Name for this phone' }), nameInput),
+            h('div.row', {}, pairButton, h('button', { text: 'Check address', onclick: check })),
+          ),
+    );
   }
 
   root.append(
@@ -40,14 +131,23 @@ export function mountHost(root, services) {
       'div.page',
       {},
       h('h1', { text: 'OMNI host' }),
-      h('p', { text: 'This phone will be the portal to your OMNI host from any network. Secure pairing and the encrypted connection come in a later update.' }),
-      h('label.field', {}, h('span', { text: 'Host address' }), input),
-      h('div.row', {}, h('button.primary', { text: 'Save', onclick: save }), h('button', { text: 'Check', onclick: check })),
+      h('p', { text: 'Pair this phone with your OMNI computer. For now the phone and computer must be on the same Wi-Fi; the secure connection for other networks comes in a later update.' }),
+      h('label.field', {}, h('span', { text: 'Host address' }), hostInput),
+      warning,
+      pairedBox,
       status,
-      h('h3', { text: 'Pairing' }),
-      h('p.muted', { text: 'Coming with secure handoff: pair with the six-digit code from PHONE on the desktop, then reach the host away from home.' }),
-      h('input', { type: 'text', inputmode: 'numeric', placeholder: '6-digit code', disabled: true, 'aria-label': 'Pairing code' }),
     ),
   );
-  return { shown() {} };
+  hostInput.addEventListener('change', readHost);
+  if (services.settings.hostUrl) showWarning(services.settings.hostUrl);
+  render();
+  return { shown: () => paired && check() };
+}
+
+function explain(error) {
+  const msg = String(error?.message || error);
+  if (/cleartext/i.test(msg)) return 'This app build blocks plain http. Install the newer build of the app.';
+  if (/timed? ?out|failed to connect|unreachable|ECONNREFUSED|could not connect|network/i.test(msg))
+    return `Can't reach the computer at that address. Check the phone is on the same Wi-Fi, the server runs with npm run dev:lan, and Windows allowed Node.js on private networks. (${msg})`;
+  return msg;
 }

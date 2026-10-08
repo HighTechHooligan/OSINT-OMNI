@@ -1,6 +1,7 @@
 import { DEFAULT_ROUTER_URL } from './valhalla.js';
 import { DEFAULT_STYLE_URL } from './mapStyle.js';
 import { DEFAULT_GEOCODER_URL } from './geocode.js';
+import { isPrivateHost } from './hostLink.js';
 
 /** User settings, kept in localStorage (small, synchronous, per device). */
 export const DEFAULT_SETTINGS = Object.freeze({
@@ -42,9 +43,13 @@ export function cleanUrl(raw) {
   const text = String(raw || '').trim();
   if (!text) return '';
   try {
-    const url = new URL(/^[a-z]+:\/\//i.test(text) ? text : `https://${text}`);
+    // A bare LAN address means the desktop's plain-http server; anything else defaults to https.
+    const bare = !/^[a-z]+:\/\//i.test(text);
+    let url = new URL(bare ? `https://${text}` : text);
+    if (bare && isPrivateHost(url.href)) url = new URL(`http://${text}`);
     if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return null;
-    return (url.origin + url.pathname).replace(/\/+$/, '');
+    // The desktop's PHONE panel shows the phone web page (…/phone/); the app wants the server.
+    return (url.origin + url.pathname.replace(/\/phone\/?$/i, '')).replace(/\/+$/, '');
   } catch {
     return null;
   }

@@ -2,6 +2,13 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Connects to your OMNI computer on this network after you pair.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Your location is the start of a route and follows you during turn-by-turn directions. It stays on this phone.</string>
   <key>CAPACITOR_DEBUG</key>
