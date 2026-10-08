@@ -22,6 +22,10 @@ const PANEL_GROUPS = [
     ids: ['osm-streets'],
   },
   {
+    label: 'Airspace',
+    ids: ['airspace'],
+  },
+  {
     label: 'Movement',
     ids: [
       'satellites',
@@ -46,6 +50,7 @@ const PANEL_GROUPS = [
       'local-datacenters',
       'telegeography-submarine-cables',
       'local-dams',
+      'wind-turbines',
     ],
   },
   {

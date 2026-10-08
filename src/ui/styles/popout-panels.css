@@ -1,0 +1,407 @@
+/* ── Pop-out panels (dossiers and other views) + SITE view switch ── */
+.popout-panel {
+  position: fixed;
+  z-index: 160;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  min-width: 280px;
+  min-height: 120px;
+  max-height: calc(100vh - 32px);
+  resize: both;
+  overflow: hidden;
+  color: var(--text-primary, #e8eaed);
+  background: rgba(12, 12, 20, 0.92);
+  border: 1px solid var(--glass-border, rgba(255, 255, 255, 0.12));
+  border-radius: var(--panel-radius, 16px);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  font-size: 12px;
+}
+
+.popout-panel.popout-front {
+  border-color: rgba(var(--accent-rgb, 179, 71, 240), 0.55);
+}
+
+.popout-panel.popout-collapsed {
+  min-height: 0;
+  height: auto !important;
+  resize: horizontal;
+}
+
+.popout-panel.popout-collapsed .popout-body,
+.popout-panel.popout-collapsed .popout-note {
+  display: none;
+}
+
+.popout-head {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 0.6rem 0.7rem 0.5rem 0.9rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.popout-windowed .popout-head {
+  cursor: default;
+}
+
+.popout-titles {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.popout-kind {
+  font-family: var(--font-mono, monospace);
+  font-size: 9px;
+  letter-spacing: 2px;
+  color: rgba(var(--accent-rgb, 179, 71, 240), 0.9);
+}
+
+.popout-title {
+  overflow: hidden;
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.popout-subtitle {
+  color: var(--text-secondary, rgba(232, 234, 237, 0.6));
+}
+
+.popout-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 0.2rem;
+}
+
+.popout-actions button,
+.dossier-actions button,
+.dossier-research > button,
+.site-tray-segment button {
+  padding: 0.2rem 0.5rem;
+  color: var(--text-primary, #e8eaed);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.popout-actions button:hover,
+.dossier-actions button:hover,
+.site-tray-segment button:hover {
+  border-color: rgba(var(--accent-rgb, 179, 71, 240), 0.6);
+}
+
+.popout-actions button:focus-visible,
+.dossier-actions button:focus-visible,
+.site-tray-segment button:focus-visible {
+  outline: 2px solid rgba(var(--accent-rgb, 179, 71, 240), 0.9);
+  outline-offset: 1px;
+}
+
+.dossier-research > button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.popout-note {
+  margin: 0.5rem 0.9rem 0;
+  color: #ffb74d;
+}
+
+.popout-body {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 0.6rem 0.9rem 0.9rem;
+}
+
+.dossier-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 0.5rem;
+}
+
+.dossier-section h4 {
+  margin: 0.8rem 0 0.3rem;
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--text-secondary, rgba(232, 234, 237, 0.6));
+}
+
+.dossier-section dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.2rem 0.75rem;
+  margin: 0;
+}
+
+.dossier-section dt {
+  color: var(--text-secondary, rgba(232, 234, 237, 0.6));
+}
+
+.dossier-section dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.dossier-links,
+.dossier-plan {
+  margin: 0;
+  padding-left: 1.1rem;
+}
+
+.dossier-links a,
+.dossier-results a {
+  color: #81d4fa;
+}
+
+.dossier-plan li {
+  margin-bottom: 0.25rem;
+}
+
+.dossier-plan span {
+  display: block;
+  color: var(--text-secondary, rgba(232, 234, 237, 0.6));
+}
+
+.dossier-plan code {
+  font-size: 10.5px;
+  overflow-wrap: anywhere;
+}
+
+.dossier-note {
+  margin: 0.4rem 0;
+  color: var(--text-dim, rgba(232, 234, 237, 0.45));
+}
+
+/* Aircraft pop-out (double-click a plane) */
+.dossier-section h5 {
+  margin: 0.6rem 0 0.25rem;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary, rgba(232, 234, 237, 0.6));
+}
+
+.aircraft-model-title {
+  margin: 0 0 0.35rem;
+}
+
+.aircraft-thumb {
+  display: block;
+  max-width: 100%;
+  max-height: 160px;
+  margin: 0.45rem 0;
+  border-radius: 4px;
+  object-fit: cover;
+}
+
+.aircraft-extract {
+  margin: 0.45rem 0;
+  line-height: 1.45;
+}
+
+.aircraft-notes {
+  margin: 0;
+  padding-left: 1.1rem;
+}
+
+.aircraft-notes li {
+  margin-bottom: 0.3rem;
+}
+
+.aircraft-notes a,
+.dossier-note a {
+  color: #81d4fa;
+}
+
+/* A popped-out window: the panel fills it. */
+.popout-window-body {
+  margin: 0;
+  background: #0b0b12;
+}
+
+.popout-window-body .popout-panel.popout-windowed {
+  position: static;
+  width: 100vw;
+  height: 100vh;
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+  resize: none;
+}
+
+/* SITE tray: topography ⇄ buildings switch and legend */
+.site-tray-segment {
+  display: inline-flex;
+  gap: 0.25rem;
+  margin-bottom: 0.4rem;
+}
+
+.site-tray-segment button[aria-checked='true'] {
+  background: var(--accent-fade, rgba(179, 71, 240, 0.35));
+  border-color: rgba(var(--accent-rgb, 179, 71, 240), 0.7);
+}
+
+.site-tray-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin: 0.3rem 0;
+  font-size: 10px;
+  color: var(--text-secondary, rgba(232, 234, 237, 0.6));
+}
+
+.site-tray-legend span::before {
+  display: inline-block;
+  width: 0.65rem;
+  height: 0.65rem;
+  margin-right: 0.3rem;
+  vertical-align: -1px;
+  content: '';
+  border-radius: 2px;
+}
+
+.site-tray-legend .lg-osm::before {
+  background: #4fc3f7;
+}
+
+.site-tray-legend .lg-mesh::before {
+  background: #ffb74d;
+}
+
+.site-tray-legend .lg-road::before {
+  background: #ffd54f;
+  height: 0.2rem;
+  vertical-align: 2px;
+}
+
+.site-tray-legend .lg-park::before {
+  background: #66bb6a;
+}
+
+@media (max-width: 520px) {
+  .popout-panel {
+    left: 8px !important;
+    right: 8px;
+    width: auto !important;
+  }
+}
+
+/* Paste-coordinates panel and the SITE radius input */
+.coord-paste-text,
+.site-tray-input,
+.coord-paste-row select {
+  box-sizing: border-box;
+  color: var(--text-primary, #e8eaed);
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  font: inherit;
+}
+
+.coord-paste-text {
+  width: 100%;
+  min-height: 9rem;
+  padding: 0.5rem;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  resize: vertical;
+}
+
+.site-tray-input {
+  min-width: 0;
+  padding: 0.3rem 0.5rem;
+  font-size: 11px;
+}
+
+.coord-paste-text:focus-visible,
+.site-tray-input:focus-visible {
+  outline: 2px solid rgba(var(--accent-rgb, 179, 71, 240), 0.9);
+  outline-offset: 1px;
+}
+
+.coord-paste-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 0.5rem 0;
+  color: var(--text-secondary, rgba(232, 234, 237, 0.6));
+}
+
+.coord-paste-row select {
+  margin-left: 0.3rem;
+  padding: 0.15rem 0.3rem;
+}
+
+/* SITE pop-outs: the ⧉ buttons and sections hosted in a pop-out panel */
+.site-tray-pop {
+  margin-left: auto;
+  padding: 0 0.3rem;
+  color: var(--text-secondary, rgba(232, 234, 237, 0.6));
+  background: none;
+  border: 0;
+  font-size: 0.8rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.site-tray-pop:hover,
+.site-tray-pop:focus-visible {
+  color: var(--accent);
+}
+
+.site-tray-head .site-tray-pop {
+  margin-right: 0.4rem;
+}
+
+.site-tray-section h3 {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+}
+
+.site-tray-popbody .site-tray-section,
+.site-tray-popbody .site-tray-body {
+  border-bottom: 0;
+  font-size: 12px;
+}
+
+.site-tray-popbody .site-tray-body {
+  padding: 0;
+  overflow: visible;
+}
+
+.site-tray-legend .lg-vs-seen::before {
+  background: #3ddc84;
+}
+
+.site-tray-legend .lg-vs-hidden::before {
+  background: #ff5252;
+}
+
+.site-tray-legend .lg-vs-high::before {
+  background: #ffc400;
+}
+
+.site-tray-legend .lg-vs-edge-hi::before,
+.site-tray-legend .lg-vs-edge-lo::before {
+  height: 0.2rem;
+  vertical-align: 2px;
+  background: #ffffff;
+}
+
+.site-tray-legend .lg-vs-edge-lo::before {
+  background: #00e5ff;
+}
