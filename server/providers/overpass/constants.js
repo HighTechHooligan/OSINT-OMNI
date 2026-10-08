@@ -5,7 +5,7 @@ import path from 'node:path';
 // ---------------------------------------------------------------------------
 /** Stable application identity for operator-configured Overpass instances. */
 const OVERPASS_USER_AGENT =
-  'gods-eye-view/0.1 (+https://github.com/bilawalsidhu/gods-eye-view)';
+  'osint-omni/0.2 (+https://github.com/HighTechHooligan/OSINT-OMNI)';
 
 /** Parse only operator-supplied HTTP(S) endpoints; private instances are allowed. */
 function parseOverpassUpstreams(raw) {
@@ -27,13 +27,31 @@ function parseOverpassUpstreams(raw) {
   return endpoints.slice(0, 8);
 }
 
+/**
+ * Public Overpass instances used when `OVERPASS_UPSTREAMS` is unset (OSINT
+ * OMNI: OSM roads, buildings and boundaries should work out of the box).
+ * Tried in order; `OVERPASS_UPSTREAMS=none` turns Overpass off entirely.
+ */
+const OVERPASS_PUBLIC_UPSTREAMS = Object.freeze([
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter',
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+]);
+
 let upstreamMemo = { raw: null, endpoints: [] };
 
-/** Resolve after environment loading. Public Overpass instances are not used by default. */
+/** Resolve after environment loading: operator list, public defaults, or none. */
 function resolveOverpassUpstreams() {
-  const raw = process.env.OVERPASS_UPSTREAMS || '';
+  const raw = String(process.env.OVERPASS_UPSTREAMS ?? '').trim();
   if (upstreamMemo.raw !== raw)
-    upstreamMemo = { raw, endpoints: parseOverpassUpstreams(raw) };
+    upstreamMemo = {
+      raw,
+      endpoints: !raw
+        ? [...OVERPASS_PUBLIC_UPSTREAMS]
+        : /^(none|off|false|0)$/i.test(raw)
+          ? []
+          : parseOverpassUpstreams(raw),
+    };
   return [...upstreamMemo.endpoints];
 }
 
@@ -153,6 +171,7 @@ export {
   OVERPASS_MAX_RESPONSE_BYTES,
   parseOverpassUpstreams,
   resolveOverpassUpstreams,
+  OVERPASS_PUBLIC_UPSTREAMS,
   OVERPASS_USER_AGENT,
   OVERPASS_TIMEOUT_MS,
 };

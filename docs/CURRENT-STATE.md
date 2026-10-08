@@ -3648,11 +3648,13 @@ silently demoting every later lookup for the session.
 
 ### Optional Overpass configuration
 
-Public Overpass instances are not used by default. `OVERPASS_UPSTREAMS` is a
+OSINT OMNI uses public Overpass instances by default (overpass-api.de,
+overpass.private.coffee, maps.mail.ru, tried in order), so OSM roads,
+buildings and boundaries work without setup. `OVERPASS_UPSTREAMS` is a
 server-only comma-separated list of HTTP(S) instances the operator runs or pays
-for, resolved lazily after env loading. It replaces the empty default list;
-there is no built-in fallback. Local/private instances are allowed. The stable
-`gods-eye-view/…` User-Agent is unchanged. URLs never appear in response headers
+for, resolved lazily after env loading; it replaces the public list, and
+`OVERPASS_UPSTREAMS=none` turns Overpass off. Local/private instances are
+allowed. The User-Agent is `osint-omni/…`. URLs never appear in response headers
 or upstream errors, including old cached endpoint metadata.
 
 The shared transport guards `/api/overpass` and `/api/military-installations`.

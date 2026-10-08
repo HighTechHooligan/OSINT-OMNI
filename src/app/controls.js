@@ -7,9 +7,23 @@ import { createSiteOrbit } from '../services/siteOrbit.js';
 import { createSiteContours } from '../services/siteContours.js';
 import { createSiteRoutes } from '../services/siteRoutes.js';
 import { geocodeKeyless } from '../keylessGeocoder.js';
-import { mountFeaturesCode } from '../ui/featuresCode.js';
-import { mountSiteTray } from '../ui/siteTray.js';
 import { mountRoutesTray } from '../ui/routesTray.js';
+import { createSiteBuildings } from '../services/siteBuildings.js';
+import { createSiteViewshed } from '../services/siteViewshed.js';
+import { createAircraftDossier } from '../services/aircraftDossier.js';
+import { createLocationResearch } from '../tools/locationResearch.js';
+import { createPopoutPanels } from '../ui/popoutPanels.js';
+import { openDossier } from '../ui/dossierPanel.js';
+import { openAircraftPanel } from '../ui/aircraftPanel.js';
+import { createCapturedRunner, mountFeaturesCode } from '../ui/featuresCode.js';
+import { mountSiteTray } from '../ui/siteTray.js';
+import { captureView, createPhoneLink } from '../services/phoneLink.js';
+import { mountPhoneTray } from '../ui/phoneTray.js';
+import { mountViewshedTray } from '../ui/viewshedTray.js';
+import {
+  attachSceneBudgets,
+  resourceBudgets,
+} from '../services/resourceBudgets.js';
 
 /** Construct the existing controls and camera presentation. */
 export function createApplicationControls({
@@ -51,25 +65,92 @@ export function createApplicationControls({
   const siteRoutes = createSiteRoutes(viewer, {
     geocode: (query) => geocodeKeyless(query),
   });
+  // Pop-out panels any feature can request (dossiers today). Building mode
+  // turns a click on a building, road or park into a dossier panel.
+  const popoutPanels = createPopoutPanels();
+  defer(() => popoutPanels.destroy());
+  // No crawler yet: the research stub shows the planned searches only.
+  const locationResearch = createLocationResearch();
+  const siteBuildings = createSiteBuildings(viewer, {
+    boundary: siteBoundary,
+    contours: siteContours,
+    onPick: (record) =>
+      openDossier({
+        panels: popoutPanels,
+        record,
+        buildings: siteBuildings,
+        research: locationResearch,
+      }),
+  });
+  defer(() => siteBuildings.destroy());
+  // The viewshed has its own tab: a point, route or area observer, with its
+  // own orbit around the observer and its reach.
+  const siteViewshed = createSiteViewshed(viewer, { boundary: siteBoundary });
+  defer(() => siteViewshed.destroy());
+  const viewshedOrbit = createSiteOrbit(viewer, {
+    boundary: { requireSite: () => siteViewshed.orbitTarget() },
+    beforeCameraControl: () => {
+      styleManager.orbitController?.stop();
+      siteOrbit.stop();
+    },
+  });
+  defer(() => viewshedOrbit.destroy());
+  // How much of the machine to use (viewshed CPU/GPU, tile and height
+  // caches): VIEWSHED → Machine use, Features Code `budget`.
+  defer(attachSceneBudgets(viewer.scene, resourceBudgets));
   const site = Object.freeze({
+    budgets: resourceBudgets,
     boundary: siteBoundary,
     orbit: siteOrbit,
     contours: siteContours,
     routes: siteRoutes,
+    buildings: siteBuildings,
+    viewshed: siteViewshed,
+    viewshedOrbit,
   });
   defer(() => siteRoutes.destroy());
   defer(() => siteContours.destroy());
   defer(() => siteOrbit.destroy());
   defer(() => siteBoundary.destroy());
+  // The data manager attaches after controls start; resolve it lazily.
+  const getDataManager = () => styleManager._dataManager ?? null;
+  // Double-click a plane: ride in its cockpit and open its pop-out.
+  const aircraft = createAircraftDossier(viewer, {
+    getStyleManager: () => styleManager,
+    getDataManager,
+    openPanel: (spec) => openAircraftPanel({ panels: popoutPanels, ...spec }),
+  });
+  defer(() => aircraft.destroy());
+  // The LOCATION bar's search, so `goto` flies exactly as typing there does.
+  const goTo = (query) => styleManager._locationLookup?.run(query);
+  // Phone remote: a paired phone sends Features Code lines; they run here
+  // through the same command table (without `js` or `phone`).
+  const phone = createPhoneLink({
+    runCommand: createCapturedRunner({
+      site,
+      viewer,
+      getDataManager,
+      goTo,
+      panels: popoutPanels,
+      aircraft,
+    }),
+    snapshot: () => captureView(viewer),
+  });
+  phone.startBridge();
+  defer(() => phone.destroy());
   const featuresCode = mountFeaturesCode({
     viewer,
     site,
-    // The data manager attaches after controls start; resolve it lazily.
-    getDataManager: () => styleManager._dataManager ?? null,
+    getDataManager,
+    panels: popoutPanels,
+    aircraft,
+    phone,
+    goTo,
   });
   defer(() => featuresCode.destroy());
   const siteTray = mountSiteTray({
     site,
+    panels: popoutPanels,
     onOpenFeaturesCode: () => featuresCode.open(),
   });
   defer(() => siteTray.destroy());
@@ -78,6 +159,17 @@ export function createApplicationControls({
     onOpenFeaturesCode: () => featuresCode.open(),
   });
   defer(() => routesTray.destroy());
+  const phoneTray = mountPhoneTray({ phone });
+  defer(() => phoneTray.destroy());
+  const viewshedTray = mountViewshedTray({
+    viewshed: siteViewshed,
+    budgets: resourceBudgets,
+    orbit: viewshedOrbit,
+    boundary: siteBoundary,
+    panels: popoutPanels,
+    onOpenFeaturesCode: () => featuresCode.open(),
+  });
+  defer(() => viewshedTray.destroy());
   // The previous multi-canvas weather compositor remains disabled. Cockpit
   // clouds use a separate, capped low-resolution GPU pass that never attaches
   // Cesium fog or post-process stages and is fully stopped in map mode.
@@ -103,5 +195,10 @@ export function createApplicationControls({
     featuresCode,
     siteTray,
     routesTray,
+    viewshedTray,
+    popoutPanels,
+    aircraft,
+    phone,
+    phoneTray,
   };
 }

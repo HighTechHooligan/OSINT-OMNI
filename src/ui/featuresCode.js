@@ -7,11 +7,29 @@
  */
 import { normalizeDatum } from '../services/contourMath.js';
 import { describeRoute, parseRouteArgs } from '../services/routePlanner.js';
+import { describeRow as describeAirspace } from '../layers/airspace/records.js';
+import { parseLength } from '../services/surveyGeometry.js';
+import { dedicatedGpuAdvice } from '../services/viewshedGpu.js';
+import { parseShapeText } from '../services/viewshedShapes.js';
+import { resultLine } from './viewshedTray.js';
+import { BUDGET_PROFILES, budgetLine } from '../services/resourceBudgets.js';
+import { parseHeightM, parseHeightRange } from '../services/viewshedMath.js';
+import { openCoordinatePaste } from './coordinatePaste.js';
+import {
+  describeSummary,
+  describeTurbine,
+  nearestTurbine,
+} from '../layers/windTurbines/records.js';
+import { formatCountdown } from '../services/phoneLink.js';
 
 export const FEATURES_CODE_HELP = `Every feature here is also in the SITE panel in the dock.
 Boundary
   boundary draw            click corners on the map; double-click/Enter finishes
-  boundary import | load   pick a .kml or .kmz (first polygon/line = boundary)
+  boundary import | load   pick a .kml/.kmz, or a .csv/.txt coordinate list
+  circle <radius> [lat,lon]  radius circle (150 m, 500 ft); no lat,lon = click centre
+  snap <deg> | snap off    angle snap while drawing (5/15/30/45/90)
+  paste                    open the paste box (CSV, "lat, lon" lines, KML)
+  coords <lat,lon; ...>    import coordinates typed inline as survey outline
   boundary export          save the boundary as .kml
   boundary clear | clear   remove the boundary
   preset hyland            load the Hyland Hills boundary + GCPs
@@ -24,6 +42,43 @@ Contours (USGS 3DEP bare earth, inside the boundary)
                            (also: datum <mode>, set elev <mode>)
   contour align on | off   snap contours to the Google 3D mesh (measured per site)
   canopy on | off          shade tree/structure cover from the Google 3D mesh
+Buildings (only inside the site boundary)
+  buildings on | off       switch the view from topography to buildings and back
+  buildings mesh | osm     find buildings from the 3D mesh scan or OSM only
+  dossier <n>              open the dossier for building n of "buildings list"
+  buildings list           list what building mode found
+  panels close             close every pop-out panel
+Viewshed (VIEWSHED tab; reach 1 km by default)
+  viewshed [eye]           click the observer spot; eye height (1.7m, 30ft)
+                           or a band (0-2.5m: green = low eye, amber = high only)
+  viewshed <lat,lon> [eye] [target]  observer at lat,lon; target 0 = ground
+  viewshed route [lat,lon; lat,lon; …]  click a walking path or drive, or give it
+  viewshed area [site | lat,lon; …]  click a park or area, or use the SITE boundary
+  viewshed circle [radius]  radius circle: click the centre (and the edge)
+  viewshed reach <1 km>    how far to look from the shape (up to 5 km)
+  viewshed clip on | off   keep the viewshed inside the SITE boundary
+  viewshed mesh | dem | auto  heights: 3D mesh (buildings + trees block),
+                           USGS bare earth, or auto (mesh when it is on)
+  viewshed gpu dedicated | integrated | cpu  which processor runs it
+  viewshed gpu             the GPU in use, and how to switch to the dedicated one
+  viewshed orbit [stop]    orbit the observer and its reach
+  viewshed off             clear the viewshed
+Machine use (CPU, GPU and RAM the app may take; also VIEWSHED > Machine use)
+  budget                   show the budgets in force
+  budget light | balanced | high | max  pick a profile (default high)
+  budget workers <n|auto>  CPU threads for the viewshed
+  budget hybrid on | off   GPU and CPU threads together on routes and areas
+  budget gpu <x>           GPU work per run (1 = about a second)
+  budget cache <4 GB>      Google 3D tile RAM cache (resizes at once)
+  budget grids <768 MB>    viewshed height grids kept in RAM
+  budget <name> <value>    also: batch, observers, cells, wide, mesh,
+                           fetch, overflow, globe, heights
+  budget reset             back to the high profile
+Aircraft (or double-click a plane on the globe)
+  plane [callsign|tail|hex]  ride in its cockpit and open its details;
+                           no name = the plane you are following
+  plane info [name]        open the details pop-out only
+  plane exit               leave the cockpit view
 Camera
   zoom                     fly to the boundary
   orbit [sec]              live orbit, seconds per revolution (default 24)
@@ -38,6 +93,22 @@ Routes (also the ROUTES panel in the dock; avoids ALPR cameras by where they fac
   route steps | zoom | clear
 Layers
   layer osm on | off       light OSM streets + building footprints
+  turbines [on | off]      US wind turbines (USGS USWTDB); bare = summary
+                           of turbines in view (count, MW, tallest)
+  turbines near            the turbine nearest the view centre
+Airspace (FAA open data; advisory, not a clearance)
+  airspace on | off        TFRs, Class B/C/D/E, special use, LAANC grid
+  airspace tfr|class|sua|laanc on | off
+                           show or hide one kind
+  airspace 3d on | off     extrude floors/ceilings and LAANC ceilings
+  airspace check           what is over the boundary center (or screen
+                           center) + Part 107 advisory
+Places
+  goto <place | lat, lon>  fly there (same search as the LOCATION bar)
+Phone remote (also the PHONE button in the dock)
+  phone pair               show a code to pair a phone on this Wi-Fi
+  phone devices            list paired phones
+  phone revoke <id|all>    unpair a phone
 Console
   cls                      clear this console
   js <expression>          run JavaScript (dev only; viewer, site in scope)
@@ -95,7 +166,27 @@ const DATUM_USAGE = 'Usage: elev asl | relative';
 const LAYER_ALIASES = Object.freeze({
   osm: 'osm-streets',
   streets: 'osm-streets',
+  airspace: 'airspace',
+  faa: 'airspace',
+  turbines: 'wind-turbines',
+  uswtdb: 'wind-turbines',
 });
+
+const AIRSPACE_USAGE =
+  'Usage: airspace on|off | airspace tfr|class|sua|laanc|3d on|off | airspace check';
+const AIRSPACE_KIND_ARGS = Object.freeze({
+  tfr: 'tfr',
+  tfrs: 'tfr',
+  class: 'class',
+  classes: 'class',
+  sua: 'sua',
+  laanc: 'laanc',
+  grid: 'laanc',
+  '3d': 'volumes',
+  volumes: 'volumes',
+});
+
+const TURBINES_ID = 'wind-turbines';
 
 /**
  * Build the command table. Dependencies are injected so it is testable
@@ -111,10 +202,33 @@ export function createFeatureCommands({
   pickFile,
   viewer,
   getDataManager = () => null,
+  panels = null,
+  aircraft = null,
+  openPaste = null,
+  getViewCenter = () => null,
   allowEval = false,
   recordTitle = 'DJI LIDAR L2+ORTHO',
+  phone = null,
+  goTo = null,
 }) {
-  const { boundary, orbit, contours, routes } = site;
+  const {
+    boundary,
+    orbit,
+    contours,
+    buildings,
+    viewshed,
+    viewshedOrbit,
+    routes,
+  } = site;
+  function viewshedLine(state) {
+    const r = state?.result;
+    if (!r)
+      return print(
+        state === null ? 'Cancelled' : 'No viewshed',
+        state === null ? 'dim' : 'err',
+      );
+    print(`Viewshed (${r.shapeLabel ?? 'Point'}): ${resultLine(r)}`, 'ok');
+  }
   const loadedLine = (summary) =>
     print(`Loaded ${describeSite(summary)}`, 'ok');
 
@@ -166,7 +280,60 @@ export function createFeatureCommands({
     print(`Elevations: ${datumWords(datum)} (run "contours on" to draw)`, 'ok');
   }
 
+  async function ensureLayer(dm, id, want = true) {
+    if (dm.isEffectivelyEnabled(id) !== want)
+      await dm.toggle(id, { origin: 'user' });
+  }
+
+  async function airspaceCommand([action, value]) {
+    const dm = getDataManager();
+    if (!dm?.layers?.has?.('airspace'))
+      return print('Airspace layer is not available', 'err');
+    const module = dm.layers.get('airspace').module;
+    const word = String(action ?? '').toLowerCase();
+    const on = switchArg(word);
+    if (!word || on !== null) {
+      const want = on ?? !dm.isEffectivelyEnabled('airspace');
+      await ensureLayer(dm, 'airspace', want);
+      return print(`airspace ${want ? 'on' : 'off'}`, 'ok');
+    }
+    if (Object.hasOwn(AIRSPACE_KIND_ARGS, word)) {
+      const key = AIRSPACE_KIND_ARGS[word];
+      const want = switchArg(value) ?? !module.getParams()[key];
+      await ensureLayer(dm, 'airspace');
+      if (!dm.setLayerParams('airspace', { [key]: want }, { origin: 'user' }))
+        module.setParams({ [key]: want });
+      return print(`airspace ${word} ${want ? 'on' : 'off'}`, 'ok');
+    }
+    if (word === 'check' || word === 'here') {
+      const s = boundary.describe();
+      const at = s?.center ?? getViewCenter();
+      if (!at) return print('No boundary and no screen center to check', 'err');
+      await ensureLayer(dm, 'airspace');
+      const line = print('Checking FAA airspace…', 'dim');
+      const result = await module.checkAt(at.lon, at.lat);
+      line.textContent = `Airspace at ${s ? `${s.name} center` : 'screen center'} (${at.lat.toFixed(5)}, ${at.lon.toFixed(5)}):`;
+      for (const row of result.hits) print(`  ${describeAirspace(row)}`, 'dim');
+      if (!result.hits.length) print('  no charted airspace found', 'dim');
+      for (const note of result.notes)
+        print(note, result.level === 'stop' ? 'err' : 'ok');
+      return;
+    }
+    print(AIRSPACE_USAGE, 'err');
+  }
+
+  /** Turn a data layer on/off (null toggles) through the data manager. */
+  async function setLayer(id, want, label = id) {
+    const dm = getDataManager();
+    if (!dm?.layers?.has?.(id)) return print(`Unknown layer "${label}"`, 'err');
+    const target = want ?? !dm.isEffectivelyEnabled(id);
+    if (dm.isEffectivelyEnabled(id) !== target)
+      await dm.toggle(id, { origin: 'user' });
+    print(`${id} ${target ? 'on' : 'off'}`, 'ok');
+  }
+
   const commands = {
+    airspace: airspaceCommand,
     help: () => print(FEATURES_CODE_HELP, 'dim'),
     cls: () => clearOutput(),
     async preset([key = 'hyland']) {
@@ -330,16 +497,369 @@ export function createFeatureCommands({
       line.textContent = `${describeRoute(r)} · ${r.message}`;
       line.className = r.passed.length ? 'fc-err' : 'fc-ok';
     },
+    async circle([radius, at]) {
+      const radiusM = parseLength(radius ?? '');
+      if (!radiusM)
+        return print(
+          'Usage: circle <radius> [lat,lon], e.g. circle 500ft',
+          'err',
+        );
+      if (at) {
+        const [lat, lon] = at.split(',').map(Number);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon))
+          return print('Centre as lat,lon, e.g. 44.8402,-93.3666', 'err');
+        return loadedLine(await boundary.setCircle([lon, lat], radiusM));
+      }
+      print('Click the circle centre on the map. Esc cancels.', 'dim');
+      const done = await boundary.startCircle({
+        radiusM,
+        onHint: (t) => print(t, 'dim'),
+      });
+      return done ? loadedLine(done) : null;
+    },
+    snap([value]) {
+      const off = switchArg(value) === false;
+      const deg = off ? 0 : Number(value);
+      if (!off && !(deg >= 0 && deg <= 90))
+        return print(
+          `Snap is ${boundary.snapDeg || 'off'}°. Usage: snap <deg> | snap off`,
+          'dim',
+        );
+      boundary.snapDeg = deg;
+      print(
+        deg ? `Drawing snaps to ${deg}° (hold Alt for free)` : 'Snapping off',
+        'ok',
+      );
+    },
+    paste() {
+      if (!openPaste) return print('Paste box not available', 'err');
+      openPaste();
+      print('Paste box open: paste CSV, "lat, lon" lines or KML', 'ok');
+    },
+    async coords(_args, raw) {
+      if (!raw)
+        return print(
+          'Usage: coords 44.84,-93.36; 44.85,-93.35; 44.85,-93.37',
+          'err',
+        );
+      const out = await boundary.importText(raw.split(';').join('\n'), {
+        mode: 'outline',
+      });
+      loadedLine(out.site);
+    },
+    async buildings([value]) {
+      if (!buildings) return print('Building mode is not available', 'err');
+      const v = String(value ?? '').toLowerCase();
+      if (v === 'list') {
+        const list = buildings.list().filter((r) => r.kind === 'building');
+        if (!list.length)
+          return print('No buildings yet. Run "buildings on".', 'dim');
+        return print(
+          list
+            .slice(0, 40)
+            .map(
+              (r, i) =>
+                `${i + 1}. ${r.tags.name || r.id} · ${Math.round(r.measure.areaM2)} m² · ${r.height.heightM.toFixed(1)} m · ${Math.round(r.volumeM3)} m³`,
+            )
+            .join('\n'),
+          'dim',
+        );
+      }
+      const on =
+        v === 'mesh' || v === 'osm'
+          ? true
+          : (switchArg(v) ?? !buildings.describe().on);
+      if (!on) {
+        await buildings.hide();
+        return print('Back to topography', 'ok');
+      }
+      const line = print('Finding buildings…', 'dim');
+      const state = await buildings.show({
+        source: v === 'mesh' || v === 'osm' ? v : 'auto',
+      });
+      const c = state.counts;
+      line.textContent = `${c.buildings} buildings · ${c.roads} roads · ${c.parks} parks (${state.source})${state.osmError ? ` · OSM: ${state.osmError}` : ''}. Click one for its dossier.`;
+      line.className = 'fc-ok';
+    },
+    async viewshed(args, raw = args.join(' ')) {
+      if (!viewshed) return print('Viewshed is not available', 'err');
+      const [first, ...rest] = args;
+      const tail = raw
+        .slice(raw.indexOf(first ?? '') + (first ?? '').length)
+        .trim();
+      if (switchArg(first) === false) {
+        viewshed.clear();
+        return print('Viewshed cleared', 'ok');
+      }
+      const recompute = async (note) => {
+        if (!viewshed.describe().shape) return print(note, 'ok');
+        return viewshedLine(await viewshed.compute());
+      };
+      if (first === 'gpu') {
+        const mode = rest[0];
+        if (!['dedicated', 'integrated', 'cpu'].includes(mode)) {
+          const d = viewshed.describe();
+          print(
+            `Computing on: ${d.gpu}${d.renderer ? ` (${d.renderer}, ${d.gpuKind})` : ''}. Usage: viewshed gpu dedicated|integrated|cpu`,
+            'dim',
+          );
+          const advice = dedicatedGpuAdvice(
+            d.gpuKind,
+            d.renderer,
+            globalThis.navigator?.userAgentData?.platform ||
+              globalThis.navigator?.platform,
+          );
+          return advice && print(advice, 'err');
+        }
+        viewshed.setOptions({ gpu: mode });
+        return recompute(`Viewshed will compute on: ${mode}`);
+      }
+      if (['mesh', 'dem', 'auto'].includes(first)) {
+        viewshed.setOptions({ source: first });
+        return recompute(
+          `Viewshed heights: ${first}. Run "viewshed" to place an observer.`,
+        );
+      }
+      if (first === 'reach') {
+        const reachM = parseLength(tail);
+        if (reachM == null)
+          return print(
+            `Reach: ${viewshed.describe().reachM} m. Usage: viewshed reach 1 km`,
+            'dim',
+          );
+        viewshed.setOptions({ reachM });
+        return recompute(`Viewshed reach: ${Math.round(reachM)} m`);
+      }
+      if (first === 'clip') {
+        const on = switchArg(rest[0]);
+        if (on === null) return print('Usage: viewshed clip on|off', 'dim');
+        viewshed.setOptions({ clip: on });
+        return recompute(
+          `Viewshed ${on ? 'clipped to' : 'not limited to'} the SITE boundary`,
+        );
+      }
+      if (first === 'orbit') {
+        if (!viewshedOrbit) return print('Orbit is not available', 'err');
+        if (switchArg(rest[0]) === false || rest[0] === 'stop') {
+          viewshedOrbit.stop();
+          return print('Orbit stopped', 'ok');
+        }
+        await viewshedOrbit.zoom();
+        viewshedOrbit.orbit();
+        return print(
+          'Orbiting the viewshed. "viewshed orbit stop" stops.',
+          'ok',
+        );
+      }
+      if (first === 'route' || first === 'area') {
+        const kind = first === 'route' ? 'line' : 'area';
+        if (kind === 'area' && rest[0] === 'site') {
+          print('Tracing sight lines from the SITE boundary…', 'dim');
+          return viewshedLine(await viewshed.useSiteBoundary());
+        }
+        if (tail) {
+          const shape = parseShapeText(tail, kind);
+          print('Tracing sight lines…', 'dim');
+          return viewshedLine(await viewshed.compute({ shape }));
+        }
+        print(
+          `Click ${kind === 'line' ? 'along the route' : 'the corners of the area'}; double-click or Enter finishes, Esc cancels.`,
+          'dim',
+        );
+        return viewshedLine(await viewshed.pickShape(kind));
+      }
+      if (first === 'circle') {
+        const radiusM = tail ? parseLength(tail) : null;
+        if (tail && radiusM == null)
+          return print('Radius like 150 m, 500 ft or 0.5 km', 'err');
+        print('Click the circle centre. Esc cancels.', 'dim');
+        return viewshedLine(await viewshed.pickShape('circle', { radiusM }));
+      }
+      let at = null;
+      let heights = args;
+      if (first?.includes(',')) {
+        const [lat, lon] = first.split(',').map(Number);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon))
+          return print('Observer as lat,lon, e.g. 44.8402,-93.3666', 'err');
+        at = [lon, lat];
+        heights = rest;
+      }
+      const [eyeText, targetText] = heights;
+      const eye = eyeText != null ? parseHeightRange(eyeText) : undefined;
+      const targetM = targetText != null ? parseHeightM(targetText) : undefined;
+      if (eye === null || targetM === null)
+        return print('Eye like 1.7, 10m, 30ft or a band like 0-2.5m', 'err');
+      const opts = { lowM: eye?.lowM, highM: eye?.highM, targetM };
+      if (at) {
+        print('Tracing sight lines…', 'dim');
+        return viewshedLine(await viewshed.compute({ at, ...opts }));
+      }
+      print('Click the observer spot. Esc cancels.', 'dim');
+      return viewshedLine(await viewshed.pickObserver(opts));
+    },
+    dossier([n]) {
+      const list = buildings?.list().filter((r) => r.kind === 'building') ?? [];
+      const record = list[intArg(n, 0, 1, list.length || 1) - 1];
+      if (!record)
+        return print('Usage: dossier <n> (see "buildings list")', 'err');
+      buildings.pick(record.id);
+      print(`Opened dossier for ${record.tags.name || record.id}`, 'ok');
+    },
+    async plane([first, ...rest]) {
+      if (!aircraft) return print('Aircraft details are not available', 'err');
+      const action = String(first ?? '').toLowerCase();
+      if (action === 'exit') {
+        return aircraft.exitCockpit()
+          ? print('Left the cockpit view', 'ok')
+          : print('Not in the cockpit view', 'dim');
+      }
+      const infoOnly = action === 'info';
+      const query = (infoOnly ? rest : [first, ...rest])
+        .filter(Boolean)
+        .join(' ');
+      const target = aircraft.find(query);
+      if (!target)
+        return print(
+          query
+            ? `No aircraft matching "${query}" in the Flights or Military layers`
+            : 'Follow a plane first, or name one: plane <callsign|tail|hex>',
+          'err',
+        );
+      const label = `${target.id.toUpperCase()} (${target.layerId})`;
+      if (infoOnly) {
+        aircraft.openDetails(target);
+        return print(`Opened details for ${label}`, 'ok');
+      }
+      const result = await aircraft.flyIn(target);
+      print(
+        result.ok
+          ? `In the cockpit of ${label}; details open`
+          : `Opened details for ${label}; cockpit unavailable: ${result.error}`,
+        result.ok ? 'ok' : 'err',
+      );
+    },
+    panels([action]) {
+      if (String(action).toLowerCase() !== 'close')
+        return print('Usage: panels close', 'err');
+      panels?.closeAll();
+      print('Closed all pop-out panels', 'ok');
+    },
     async layer([name, value]) {
       const id = LAYER_ALIASES[String(name ?? '').toLowerCase()] ?? name;
-      const dm = getDataManager();
       if (!id) return print('Usage: layer osm on|off', 'err');
-      if (!dm?.layers?.has?.(id))
-        return print(`Unknown layer "${name}"`, 'err');
-      const want = switchArg(value) ?? !dm.isEffectivelyEnabled(id);
-      if (dm.isEffectivelyEnabled(id) !== want)
-        await dm.toggle(id, { origin: 'user' });
-      print(`${id} ${want ? 'on' : 'off'}`, 'ok');
+      await setLayer(id, switchArg(value), name);
+    },
+    budget(args) {
+      const budgets = site.budgets;
+      if (!budgets) return print('Budgets are not available', 'err');
+      const [first, ...rest] = args.map((a) => a.toLowerCase());
+      if (!first)
+        return print(`Machine use: ${budgetLine(budgets.get())}`, 'ok');
+      if (first === 'reset')
+        return print(`Machine use: ${budgetLine(budgets.reset())}`, 'ok');
+      if (first in BUDGET_PROFILES)
+        return print(
+          `Machine use: ${budgetLine(budgets.setProfile(first))}`,
+          'ok',
+        );
+      if (!rest.length)
+        return print(
+          'Usage: budget [light|balanced|high|max|reset] or budget <name> <value>',
+          'dim',
+        );
+      const b = budgets.set(first, rest.join(' '));
+      return print(
+        `Machine use: ${budgetLine(b)}. Viewshed changes apply from the next run.`,
+        'ok',
+      );
+    },
+    async turbines([arg]) {
+      const on = switchArg(arg);
+      if (on !== null) return setLayer(TURBINES_ID, on);
+      const near = String(arg ?? '').toLowerCase() === 'near';
+      if (arg !== undefined && !near)
+        return print('Usage: turbines [on|off|near]', 'err');
+      const dm = getDataManager();
+      const layer = dm?.layers?.get?.(TURBINES_ID)?.module;
+      if (!layer) return print('Wind turbine layer unavailable', 'err');
+      if (!dm.isEffectivelyEnabled(TURBINES_ID))
+        await setLayer(TURBINES_ID, true);
+      const line = print('Loading USWTDB turbines in view…', 'dim');
+      await layer.update?.();
+      const view = layer.getView?.();
+      const error = layer.getStats?.().error;
+      if (!view) {
+        line.textContent = error || 'No wind turbine data yet';
+        line.className = 'fc-err';
+        return;
+      }
+      line.className = 'fc-ok';
+      if (!near) {
+        line.textContent = describeSummary(view);
+        return;
+      }
+      const at = viewer?.camera?.positionCartographic;
+      const hit =
+        at &&
+        nearestTurbine(
+          view.turbines,
+          (at.longitude * 180) / Math.PI,
+          (at.latitude * 180) / Math.PI,
+        );
+      line.textContent = hit
+        ? `${hit.km.toFixed(1)} km: ${describeTurbine(hit.turbine)}`
+        : 'No turbines in view';
+    },
+    async goto(_args, raw) {
+      if (!raw) return print('Usage: goto <place | lat, lon>', 'err');
+      if (!goTo) return print('Place search is not available', 'err');
+      await goTo(raw);
+      print(`Flying to ${raw}`, 'ok');
+    },
+    async phone([action = 'status', id]) {
+      if (!phone) return print('The phone remote is not available', 'err');
+      const describeDevices = (devices) =>
+        devices.length
+          ? devices
+              .map(
+                (d) =>
+                  `${d.id}  ${d.name}  (paired ${new Date(d.pairedAt).toLocaleTimeString()})`,
+              )
+              .join('\n')
+          : 'No phones paired';
+      switch (action.toLowerCase()) {
+        case 'pair': {
+          const state = await phone.startPairing();
+          print(
+            `Pairing code ${state.pairing.code} (expires in ${formatCountdown(state.pairing.expiresAt)})`,
+            'ok',
+          );
+          return print(
+            state.lanReady && state.urls.length
+              ? `On the phone, open ${state.urls.join(' or ')}`
+              : `${state.hint}${state.urls.length ? ` Then open ${state.urls[0]} on the phone.` : ''}`,
+            state.lanReady && state.urls.length ? 'ok' : 'err',
+          );
+        }
+        case 'devices':
+          return print(describeDevices((await phone.refresh()).devices), 'dim');
+        case 'revoke': {
+          if (!id) return print('Usage: phone revoke <id|all>', 'err');
+          const state = await phone.revoke(id);
+          return print(`Revoked. ${describeDevices(state.devices)}`, 'ok');
+        }
+        default: {
+          const state = await phone.refresh();
+          const { bridgeOn } = phone.describe();
+          return print(
+            `${state.devices.length} phone(s) paired · ${bridgeOn ? 'taking phone commands' : 'not taking phone commands'}` +
+              (state.lanReady
+                ? ` · ${state.urls.join(' or ')}`
+                : ` · ${state.hint}`),
+            'dim',
+          );
+        }
+      }
     },
   };
   if (allowEval) {
@@ -389,11 +909,75 @@ export function createFeatureCommands({
   return { commands, run };
 }
 
+/** Ground point under the middle of the screen, in degrees, or null. */
+function viewCenter(viewer) {
+  const canvas = viewer?.scene?.canvas;
+  if (!canvas) return null;
+  const ellipsoid = viewer.scene.globe?.ellipsoid;
+  const hit = viewer.camera.pickEllipsoid(
+    { x: canvas.clientWidth / 2, y: canvas.clientHeight / 2 },
+    ellipsoid,
+  );
+  if (!hit || !ellipsoid) return null;
+  const c = ellipsoid.cartesianToCartographic(hit);
+  if (!c) return null;
+  return {
+    lon: (c.longitude * 180) / Math.PI,
+    lat: (c.latitude * 180) / Math.PI,
+  };
+}
+
+/**
+ * Run Features Code lines without the console, collecting what they print.
+ * The phone bridge uses this; it never offers `js` and never picks files.
+ */
+export function createCapturedRunner(deps) {
+  let lines = [];
+  const print = (text, tone = '') => {
+    // Commands rewrite a line they printed (progress -> result); keep the
+    // object so the final text is what gets reported.
+    const line = {
+      textContent: String(text),
+      className: tone ? `fc-${tone}` : '',
+    };
+    lines.push(line);
+    return line;
+  };
+  const { run } = createFeatureCommands({
+    getViewCenter: () => viewCenter(deps.viewer),
+    ...deps,
+    print,
+    clearOutput: () => {},
+    pickFile: async () => null,
+    allowEval: false,
+  });
+  return async (line) => {
+    lines = [];
+    const ok = await run(line);
+    return {
+      ok,
+      lines: lines.map((l) => ({
+        text: l.textContent,
+        tone: String(l.className).replace(/^fc-/, ''),
+      })),
+    };
+  };
+}
+
 /**
  * Mount the dock button and console panel.
  * @param {{ viewer: object, site: object, getDataManager?: Function, dock?: HTMLElement|null }} options
  */
-export function mountFeaturesCode({ viewer, site, getDataManager, dock } = {}) {
+export function mountFeaturesCode({
+  viewer,
+  site,
+  getDataManager,
+  dock,
+  panels,
+  aircraft,
+  phone,
+  goTo,
+} = {}) {
   const host = dock ?? document.getElementById('command-dock');
   const item = document.createElement('div');
   item.id = 'features-code';
@@ -462,7 +1046,20 @@ export function mountFeaturesCode({ viewer, site, getDataManager, dock } = {}) {
     clearOutput: () => out.replaceChildren(),
     pickFile,
     viewer,
+    panels,
+    aircraft,
+    openPaste: panels
+      ? () =>
+          openCoordinatePaste({
+            panels,
+            boundary: site.boundary,
+            orbit: site.orbit,
+          })
+      : null,
+    getViewCenter: () => viewCenter(viewer),
     allowEval: Boolean(import.meta.env?.DEV),
+    phone,
+    goTo,
   });
 
   const place = () => {
