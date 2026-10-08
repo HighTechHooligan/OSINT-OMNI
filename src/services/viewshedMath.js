@@ -159,7 +159,7 @@ export function parseHeightM(text) {
  * walk, two running horizons). A cell visible from the low eye is always
  * visible from the high one, so each cell gets one BAND code. `rows`
  * limits the work to [r0, r1) so a worker pool can split the grid; cells
- * outside it stay NONE.
+ * outside it stay NONE. Cells farther than `maxDistM` stay NONE too.
  * @returns {Uint8Array} BAND codes
  */
 export function computeViewshedBand({
@@ -174,24 +174,48 @@ export function computeViewshedBand({
   targetM = VIEWSHED_DEFAULTS.targetM,
   refraction = VIEWSHED_DEFAULTS.refraction,
   mask = null,
+  maxDistM = Infinity,
   rows = [0, height],
   out = new Uint8Array(width * height),
 }) {
+  const ground =
+    heights[Math.round(observer.row) * width + Math.round(observer.col)];
+  if (!Number.isFinite(ground))
+    throw new RangeError('No height under the observer');
+  bandInto(
+    { heights, width, cellXM, cellYM, lowM, highM, targetM, refraction, mask },
+    observer,
+    maxDistM,
+    [rows[0], rows[1], 0, width],
+    out,
+    false,
+  );
+  return out;
+}
+
+/**
+ * One observer's band codes over the window [r0, r1) × [c0, c1), written
+ * into `out`; with `merge`, a cell keeps the best code any observer gave
+ * it (BAND codes are ordered: seen from low > high only > hidden).
+ */
+function bandInto(g, observer, maxDistM, [r0, r1, c0, c1], out, merge) {
+  const { heights, width, cellXM, cellYM, mask } = g;
   const oc = Math.round(observer.col);
   const or = Math.round(observer.row);
   const ground = heights[or * width + oc];
-  if (!Number.isFinite(ground))
-    throw new RangeError('No height under the observer');
-  const eyeLo = ground + lowM;
-  const eyeHi = ground + highM;
-  const curve = curveFactor(refraction);
-  for (let r = rows[0]; r < rows[1]; r++)
-    for (let c = 0; c < width; c++) {
+  if (!Number.isFinite(ground)) return false;
+  const eyeLo = ground + g.lowM;
+  const eyeHi = ground + (g.highM ?? g.lowM);
+  const targetM = g.targetM ?? VIEWSHED_DEFAULTS.targetM;
+  const curve = curveFactor(g.refraction);
+  for (let r = r0; r < r1; r++)
+    for (let c = c0; c < c1; c++) {
       const i = r * width + c;
       if (mask && !mask[i]) continue;
       const h = heights[i];
       if (!Number.isFinite(h)) continue;
       const dist = Math.hypot((c - oc) * cellXM, (r - or) * cellYM);
+      if (dist > maxDistM) continue;
       if (dist === 0) {
         out[i] = BAND.BOTH;
         continue;
@@ -215,14 +239,75 @@ export function computeViewshedBand({
         if (hi > maxHi) maxHi = hi;
       }
       const tz = h + targetM - dist * dist * curve;
-      out[i] =
+      const code =
         (tz - eyeLo) / dist >= maxLo
           ? BAND.BOTH
           : (tz - eyeHi) / dist >= maxHi
             ? BAND.HIGH_ONLY
             : BAND.HIDDEN;
+      if (!merge || code > out[i]) out[i] = code;
     }
-  return out;
+  return true;
+}
+
+/**
+ * Grid window [r0, r1, c0, c1) holding every cell within `maxDistM` of an
+ * observer (the whole grid when the reach is unlimited).
+ */
+export function reachWindow(observer, maxDistM, width, height, cellXM, cellYM) {
+  if (!Number.isFinite(maxDistM)) return [0, height, 0, width];
+  const oc = Math.round(observer.col);
+  const or = Math.round(observer.row);
+  const dc = Math.ceil(maxDistM / cellXM);
+  const dr = Math.ceil(maxDistM / cellYM);
+  return [
+    Math.max(0, or - dr),
+    Math.min(height, or + dr + 1),
+    Math.max(0, oc - dc),
+    Math.min(width, oc + dc + 1),
+  ];
+}
+
+/**
+ * Viewshed of many observers (points along a route, or spread over an
+ * area): a cell takes the best code any observer within `maxDistM` gives
+ * it, so green = seen from the low eye somewhere along the shape. Each
+ * observer only walks the cells within its reach. Observers over missing
+ * heights are skipped.
+ * @returns {{ codes: Uint8Array, used: number }}
+ */
+export function computeViewshedMulti({
+  heights,
+  width,
+  height,
+  cellXM,
+  cellYM,
+  observers,
+  lowM = VIEWSHED_DEFAULTS.eyeM,
+  highM = lowM,
+  targetM = VIEWSHED_DEFAULTS.targetM,
+  refraction = VIEWSHED_DEFAULTS.refraction,
+  mask = null,
+  maxDistM = Infinity,
+  out = new Uint8Array(width * height),
+}) {
+  const g = {
+    heights,
+    width,
+    cellXM,
+    cellYM,
+    lowM,
+    highM,
+    targetM,
+    refraction,
+    mask,
+  };
+  let used = 0;
+  for (const o of observers) {
+    const win = reachWindow(o, maxDistM, width, height, cellXM, cellYM);
+    if (bandInto(g, o, maxDistM, win, out, true)) used++;
+  }
+  return { codes: out, used };
 }
 
 /** Counts, shares and farthest visible distance for a BAND grid. */
@@ -343,4 +428,65 @@ export function downsampleHeights(values, width, height, factor) {
       out[r * w + c] = n ? sum / n : Number.NaN;
     }
   return { values: out, width: w, height: h, factor: f };
+}
+
+/**
+ * Surface heights from scattered points: the highest point in each cell of
+ * a north-up lon/lat grid (roofs and canopy win over the ground beside
+ * them). Cells no point hit are filled from their neighbours, up to
+ * `fillPasses` cells in from the nearest hit; farther gaps stay NaN.
+ * @param {ArrayLike<number>} points flat [lon, lat, height, lon, lat, …]
+ * @returns {{ values: Float64Array, hits: number }}
+ */
+export function surfaceGrid(
+  points,
+  bbox,
+  width,
+  height,
+  { fillPasses = 3 } = {},
+) {
+  const values = new Float64Array(width * height).fill(Number.NaN);
+  const sx = width / (bbox.maxLon - bbox.minLon);
+  const sy = height / (bbox.maxLat - bbox.minLat);
+  for (let k = 0; k + 2 < points.length; k += 3) {
+    const c = Math.floor((points[k] - bbox.minLon) * sx);
+    const r = Math.floor((bbox.maxLat - points[k + 1]) * sy);
+    const h = points[k + 2];
+    if (c < 0 || r < 0 || c >= width || r >= height || !Number.isFinite(h))
+      continue;
+    const i = r * width + c;
+    if (!(values[i] >= h)) values[i] = h;
+  }
+  let hits = 0;
+  for (const v of values) if (Number.isFinite(v)) hits++;
+  for (let pass = 0; pass < fillPasses; pass++) {
+    const next = values.slice();
+    let filled = 0;
+    for (let r = 0; r < height; r++)
+      for (let c = 0; c < width; c++) {
+        const i = r * width + c;
+        if (Number.isFinite(values[i])) continue;
+        let sum = 0;
+        let n = 0;
+        for (let y = Math.max(0, r - 1); y <= Math.min(height - 1, r + 1); y++)
+          for (
+            let x = Math.max(0, c - 1);
+            x <= Math.min(width - 1, c + 1);
+            x++
+          ) {
+            const v = values[y * width + x];
+            if (Number.isFinite(v)) {
+              sum += v;
+              n++;
+            }
+          }
+        if (n) {
+          next[i] = sum / n;
+          filled++;
+        }
+      }
+    values.set(next);
+    if (!filled) break;
+  }
+  return { values, hits };
 }

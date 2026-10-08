@@ -16,6 +16,7 @@ import { createCapturedRunner, mountFeaturesCode } from '../ui/featuresCode.js';
 import { mountSiteTray } from '../ui/siteTray.js';
 import { captureView, createPhoneLink } from '../services/phoneLink.js';
 import { mountPhoneTray } from '../ui/phoneTray.js';
+import { mountViewshedTray } from '../ui/viewshedTray.js';
 
 /** Construct the existing controls and camera presentation. */
 export function createApplicationControls({
@@ -71,14 +72,25 @@ export function createApplicationControls({
       }),
   });
   defer(() => siteBuildings.destroy());
+  // The viewshed has its own tab: a point, route or area observer, with its
+  // own orbit around the observer and its reach.
   const siteViewshed = createSiteViewshed(viewer, { boundary: siteBoundary });
   defer(() => siteViewshed.destroy());
+  const viewshedOrbit = createSiteOrbit(viewer, {
+    boundary: { requireSite: () => siteViewshed.orbitTarget() },
+    beforeCameraControl: () => {
+      styleManager.orbitController?.stop();
+      siteOrbit.stop();
+    },
+  });
+  defer(() => viewshedOrbit.destroy());
   const site = Object.freeze({
     boundary: siteBoundary,
     orbit: siteOrbit,
     contours: siteContours,
     buildings: siteBuildings,
     viewshed: siteViewshed,
+    viewshedOrbit,
   });
   defer(() => siteContours.destroy());
   defer(() => siteOrbit.destroy());
@@ -127,6 +139,14 @@ export function createApplicationControls({
   defer(() => siteTray.destroy());
   const phoneTray = mountPhoneTray({ phone });
   defer(() => phoneTray.destroy());
+  const viewshedTray = mountViewshedTray({
+    viewshed: siteViewshed,
+    orbit: viewshedOrbit,
+    boundary: siteBoundary,
+    panels: popoutPanels,
+    onOpenFeaturesCode: () => featuresCode.open(),
+  });
+  defer(() => viewshedTray.destroy());
   // The previous multi-canvas weather compositor remains disabled. Cockpit
   // clouds use a separate, capped low-resolution GPU pass that never attaches
   // Cesium fog or post-process stages and is fully stopped in map mode.
@@ -151,6 +171,7 @@ export function createApplicationControls({
     site,
     featuresCode,
     siteTray,
+    viewshedTray,
     popoutPanels,
     aircraft,
     phone,

@@ -11,6 +11,7 @@ import {
   parseHeightM,
   parseHeightRange,
   rowRuns,
+  surfaceGrid,
 } from './viewshedMath.js';
 
 const flat = (w, h, z = 100) => new Float64Array(w * h).fill(z);
@@ -189,4 +190,18 @@ test('height ranges and downsampling', () => {
   assert.equal(d.values[0], 3.25); // the 2×2 block 1, 3, 7, 2
   const gap = downsampleHeights(Float32Array.from([NaN, 2, 4, 6]), 2, 2, 2);
   assert.equal(gap.values[0], 4); // NaN ignored
+});
+
+test('surface grid: highest point per cell, small gaps filled', () => {
+  const bbox = { minLon: 0, maxLon: 4, minLat: 0, maxLat: 4 };
+  // Cell (col 0, row 0) is the north-west corner: lon 0–1, lat 3–4.
+  const pts = [0.5, 3.5, 10, 0.6, 3.4, 25, 2.5, 3.5, 5, 9, 9, 99];
+  const { values, hits } = surfaceGrid(pts, bbox, 4, 4, { fillPasses: 0 });
+  assert.equal(hits, 2);
+  assert.equal(values[0], 25); // the roof beats the ground in the same cell
+  assert.equal(values[2], 5);
+  assert.ok(Number.isNaN(values[1]));
+  const filled = surfaceGrid(pts, bbox, 4, 4, { fillPasses: 1 });
+  assert.equal(filled.values[1], 15); // mean of its two hit neighbours
+  assert.ok(Number.isNaN(filled.values[15])); // too far from any hit
 });

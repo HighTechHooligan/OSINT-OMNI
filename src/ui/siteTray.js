@@ -1,14 +1,13 @@
 /**
  * SITE: dock popdown with the GUI for every site feature — boundary (draw,
  * import, export, clear), contours (on/off + 2–100 ft slider), canopy,
- * building mode (topography ⇄ clickable buildings/roads/parks), viewshed,
- * and orbit/record. Each section (or the whole tray) can pop out into a
+ * building mode (topography ⇄ clickable buildings/roads/parks) and
+ * orbit/record. The viewshed has its own VIEWSHED tab (viewshedTray.js). Each section (or the whole tray) can pop out into a
  * movable panel and from there into its own window. Features Code exposes the same actions as commands; both
  * call the same services.
  */
 import { openCoordinatePaste } from './coordinatePaste.js';
 import { parseLength, SNAP_STEPS_DEG } from '../services/surveyGeometry.js';
-import { parseHeightM, parseHeightRange } from '../services/viewshedMath.js';
 import {
   CONTOUR_MAX_FT,
   CONTOUR_MIN_FT,
@@ -32,7 +31,7 @@ export function mountSiteTray({
   onOpenFeaturesCode,
   panels = null,
 } = {}) {
-  const { boundary, orbit, contours, buildings, viewshed } = site;
+  const { boundary, orbit, contours, buildings } = site;
   const host = dock ?? document.getElementById('command-dock');
   const item = document.createElement('div');
   item.id = 'site-tray';
@@ -138,43 +137,6 @@ export function mountSiteTray({
           <span class="lg-osm">OSM building</span><span class="lg-mesh">mesh-detected</span><span class="lg-road">road</span><span class="lg-park">park</span>
         </p>
         <p class="site-tray-note">Click a building, road or park for its dossier. Dossiers open as pop-outs; open several, drag them, or pop one into its own window.</p>
-      </section>
-
-      <section class="site-tray-section" aria-labelledby="st-vs-h">
-        <h3 id="st-vs-h">Viewshed <small>what an observer can see</small></h3>
-        <div class="site-tray-row">
-          <label class="site-tray-select">Eye
-            <input type="text" class="site-tray-input" data-st="vs-eye" value="1-2.5 m" size="8"
-              aria-label="Observer eye height or range (m or ft)" title="One height (1.7 m) or a band (1-2.5 m): with a band, green is seen even from the low eye, amber only from the high eye. 10 m pole, 30 ft roof; ft works too" />
-          </label>
-          <label class="site-tray-select">Target
-            <input type="text" class="site-tray-input" data-st="vs-target" value="0 m" size="6"
-              aria-label="Target height (m or ft)" title="Height above the ground that must be visible: 0 = the ground, 1.7 m = a person" />
-          </label>
-          <label class="site-tray-select">Heights
-            <select data-st="vs-source" aria-label="Height model">
-              <option value="auto" selected>Auto</option>
-              <option value="mesh">3D mesh (buildings, trees)</option>
-              <option value="dem">Bare earth (USGS 3DEP)</option>
-            </select>
-          </label>
-          <label class="site-tray-select">Compute on
-            <select data-st="vs-gpu" aria-label="Which processor runs the sight lines">
-              <option value="dedicated" selected>Dedicated GPU</option>
-              <option value="integrated">Integrated GPU</option>
-              <option value="cpu">CPU (all cores)</option>
-            </select>
-          </label>
-        </div>
-        <div class="site-tray-row">
-          <button type="button" data-st="vs-place" disabled>Place observer</button>
-          <button type="button" data-st="vs-run" disabled>Recompute</button>
-          <button type="button" data-st="vs-clear" disabled>Clear</button>
-        </div>
-        <p class="site-tray-status" data-st="vs-status"></p>
-        <p class="site-tray-legend" aria-hidden="true">
-          <span class="lg-vs-seen">seen from low eye</span><span class="lg-vs-high">only from high eye</span><span class="lg-vs-hidden">hidden</span><span class="lg-vs-edge-hi">high-eye edge</span><span class="lg-vs-edge-lo">low-eye edge</span>
-        </p>
       </section>
 
       <section class="site-tray-section" aria-labelledby="st-orbit-h">
@@ -449,96 +411,6 @@ export function mountSiteTray({
     });
   }
 
-  // ---- viewshed ----
-  const fmtArea = (m2) =>
-    m2 >= 40_469
-      ? `${(m2 / 4046.86).toFixed(1)} ac`
-      : `${Math.round(m2).toLocaleString()} m²`;
-  const fmtM = (m) => `${Math.round(m * 10) / 10} m`;
-  const fmtSec = (ms) =>
-    ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`;
-  function syncViewshed(state = viewshed?.describe()) {
-    if (!state) return;
-    const has = Boolean(boundary.site);
-    $('vs-place').disabled = !has && !state.picking;
-    $('vs-place').textContent = state.picking ? 'Cancel' : 'Place observer';
-    $('vs-run').disabled = !state.observer || state.loading;
-    $('vs-clear').disabled = !state.on && !state.picking;
-    if (document.activeElement !== $('vs-source'))
-      $('vs-source').value = state.source;
-    if (state.gpu) $('vs-gpu').value = state.gpu;
-    if (state.picking)
-      return say(
-        'vs-status',
-        'Click the observer spot inside the boundary. Esc cancels.',
-      );
-    if (state.loading)
-      return say('vs-status', state.progress || 'Computing viewshed…');
-    if (state.error) return say('vs-status', state.error, 'err');
-    const r = state.result;
-    if (!r)
-      return say(
-        'vs-status',
-        has
-          ? 'Set the eye height, then place an observer'
-          : 'Needs a boundary first',
-      );
-    const eyes = r.banded
-      ? `${r.lowPct}% seen from ${fmtM(r.lowM)}, ${r.highPct}% from ${fmtM(r.highM)}`
-      : `${r.highPct}% visible from ${fmtM(r.highM)}`;
-    const area = r.banded
-      ? `${fmtArea(r.bothM2)} + ${fmtArea(r.highOnlyM2)} more from the high eye, ${fmtArea(r.hiddenM2)} hidden`
-      : `${fmtArea(r.bothM2)} seen, ${fmtArea(r.hiddenM2)} hidden`;
-    const heights = r.heightsCached
-      ? 'heights ready'
-      : `heights ${fmtSec(r.heightsMs)}`;
-    say(
-      'vs-status',
-      `${eyes} · ${area} · farthest ${r.farthestHighM} m · ${r.sourceLabel}, ${r.cellM} m cells (${r.cells.toLocaleString()}) · ${heights}, sight lines ${fmtSec(r.computeMs)} on ${r.engine}`,
-      'ok',
-    );
-  }
-  const vsOptions = () => {
-    const eye = parseHeightRange($('vs-eye').value);
-    const targetM = parseHeightM($('vs-target').value);
-    if (!eye || targetM == null)
-      throw new Error(
-        'Eye like 1.7 m or a band like 1-2.5 m; target like 0 or 1.7 m',
-      );
-    return {
-      lowM: eye.lowM,
-      highM: eye.highM,
-      targetM,
-      source: $('vs-source').value,
-      gpu: $('vs-gpu').value,
-    };
-  };
-  if (!viewshed)
-    panel.querySelector('[aria-labelledby="st-vs-h"]').hidden = true;
-  else {
-    $('vs-place').addEventListener(
-      'click',
-      guard('vs-status', async () => {
-        if (viewshed.describe().picking) return viewshed.stopPicking();
-        await viewshed.pickObserver(vsOptions());
-      }),
-    );
-    $('vs-run').addEventListener(
-      'click',
-      guard('vs-status', () => viewshed.compute(vsOptions())),
-    );
-    $('vs-clear').addEventListener('click', () => viewshed.clear());
-    const rerun = guard('vs-status', async () => {
-      const opts = vsOptions();
-      if (viewshed.describe().observer) await viewshed.compute(opts);
-      else viewshed.setOptions(opts);
-    });
-    for (const key of ['vs-eye', 'vs-target'])
-      $(key).addEventListener('change', rerun);
-    $('vs-source').addEventListener('change', rerun);
-    $('vs-gpu').addEventListener('change', rerun);
-  }
-
   // ---- pop-outs: any section, or the whole tray, into a movable panel ----
   const sectionTitle = (section) =>
     section.querySelector('h3')?.firstChild?.textContent?.trim() || 'SITE';
@@ -635,7 +507,6 @@ export function mountSiteTray({
       syncBoundary();
       syncContours();
       syncBuildings();
-      syncViewshed();
       place();
     }
   };
@@ -662,11 +533,9 @@ export function mountSiteTray({
   const offBoundary = boundary.onChange(() => {
     syncBoundary();
     syncBuildings();
-    syncViewshed();
   });
   const offContours = contours.onChange((state) => syncContours(state));
   const offBuildings = buildings?.onChange((state) => syncBuildings(state));
-  const offViewshed = viewshed?.onChange((state) => syncViewshed(state));
 
   return {
     open: () => setOpen(true),
@@ -676,7 +545,6 @@ export function mountSiteTray({
       offBoundary();
       offContours();
       offBuildings?.();
-      offViewshed?.();
       window.removeEventListener('resize', onResize);
       item.remove();
       panel.remove();

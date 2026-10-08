@@ -10,6 +10,29 @@
   events for common airliners, and Wikipedia articles that mention the tail
   number. Features Code `plane [callsign|tail|hex]`, `plane info`,
   `plane exit`. New server route `/api/aircraft/trivia`.
+- **VIEWSHED tab: points, routes and areas**: the viewshed moved out of SITE
+  into its own dock tab. The observer can be a point, a route (a walking
+  path or a drive, clicked on the map or pasted as coordinates/KML), an
+  area (a park, a radius circle, or the SITE boundary). The eye band now
+  defaults to 0–2.5 m and the reach to 1 km either side (up to 5 km); the
+  SITE boundary is optional ("Inside SITE boundary only"). A route or area
+  becomes many observers, each tracing only the cells within its reach, all
+  drawn into one GPU target with MAX blending; the grid's cell size and the
+  observer count are picked to fit the GPU at hand. Long drives fetch 3DEP
+  as a corridor of tiles (a 52 km drive is 23 tiles). The tab keeps its own
+  orbit and GIF recording around the observer and its reach. Features Code:
+  `viewshed route|area|circle|reach|clip|orbit`.
+- **Viewshed mesh heights in seconds, and GPU check**: 3D mesh heights now
+  come from one top-down depth snapshot of the Google tiles (the camera
+  looks straight down, the tiles for that view load, and one frame's depth
+  buffer gives the surface height of every cell) instead of sampling the
+  finest tiles point by point, which took minutes before any progress
+  showed. Up to 250k mesh cells; point sampling remains as a fallback with
+  progress from the start. When the sight lines land on an integrated or
+  software GPU, the Viewshed section (and `viewshed gpu`) says so and gives
+  the steps to move the browser to the dedicated GPU (on Windows: Settings >
+  System > Display > Graphics > browser > High performance, then restart the
+  browser), since a page can only ask for a GPU and the OS decides.
 - **Viewshed band and speed**: the eye height can be a band (default
   1–2.5 m). Green is seen even from the low eye, amber only from the high
   eye, red hidden; a white outline marks the high-eye edge and a cyan one
