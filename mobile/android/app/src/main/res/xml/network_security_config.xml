@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Plain http is allowed because the OMNI desktop serves phones over http on
+  the home network (npm run dev:lan) and its address is a LAN IP that can't be
+  listed here ahead of time. Every public service the app uses is https. The
+  secure handoff to the host will move this link to TLS and tighten this.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

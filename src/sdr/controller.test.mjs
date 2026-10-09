@@ -1019,3 +1019,44 @@ test("a device selection that resolves after its acquisition was superseded cann
   assert.equal(state.status, 'streaming');
   assert.equal(state.connected, true);
 });
+
+test('receiver location: set by hand, and the map view when location is denied', async (t) => {
+  const restore = replaceGlobal('navigator', {
+    geolocation: {
+      getCurrentPosition: (_ok, fail) =>
+        fail(new Error('User denied Geolocation')),
+    },
+  });
+  t.after(restore);
+  const controller = new SdrController({ storage: memoryStorage() });
+
+  assert.equal(
+    controller.setReceiverLocation({ latitude: 95, longitude: 0 }),
+    false,
+  );
+  assert.equal(
+    controller.setReceiverLocation({ latitude: 30.27, longitude: -97.74 }),
+    true,
+  );
+  assert.deepEqual(controller.getState().receiverLocation, {
+    latitude: 30.27,
+    longitude: -97.74,
+  });
+  assert.equal(controller.getState().locationSource, 'manual');
+
+  assert.equal(
+    await controller.requestReceiverLocation({
+      fallback: () => ({ latitude: 44.97, longitude: -93.26 }),
+    }),
+    true,
+  );
+  assert.equal(controller.getState().locationStatus, 'ready');
+  assert.equal(controller.getState().locationSource, 'map');
+  assert.match(
+    controller.getState().message,
+    /not granted; using the map view/,
+  );
+
+  assert.equal(await controller.requestReceiverLocation(), false);
+  assert.equal(controller.getState().locationStatus, 'denied');
+});

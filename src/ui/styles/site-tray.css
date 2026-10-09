@@ -1,5 +1,6 @@
-/* ── SITE: dock item + popdown (boundary, contours, canopy, orbit) ── */
-#command-dock > #site-tray {
+/* ── SITE: dock item + popdown (boundary, contours, canopy, orbit) ──
+   The PHONE and VIEWSHED dock items reuse these styles via .site-tray-dock. */
+#command-dock > .site-tray-dock {
   position: relative;
   order: -1;
   display: flex;
@@ -23,11 +24,11 @@
     box-shadow 160ms ease;
 }
 
-#command-dock > #site-tray:hover {
+#command-dock > .site-tray-dock:hover {
   border-color: var(--glass-border-hover);
 }
 
-#command-dock > #site-tray.open {
+#command-dock > .site-tray-dock.open {
   border-color: rgba(var(--accent-rgb), 0.55);
   box-shadow:
     0 8px 32px rgba(0, 0, 0, 0.5),
@@ -79,7 +80,7 @@
 }
 
 .site-tray-toggle:hover .site-tray-label,
-#site-tray.open .site-tray-label {
+.site-tray-dock.open .site-tray-label {
   color: var(--text-primary);
 }
 
@@ -202,6 +203,18 @@
   cursor: not-allowed;
 }
 
+.site-tray-row button[aria-pressed='true'] {
+  background: var(--accent-fade);
+  border-color: rgba(var(--accent-rgb), 0.65);
+}
+
+.site-tray-row .vt-coords {
+  flex: 1 1 100%;
+  min-height: 2.6rem;
+  resize: vertical;
+  font-family: inherit;
+}
+
 .site-tray-status {
   min-height: 1em;
   margin: 0;
@@ -230,6 +243,18 @@
 
 .site-tray-note button {
   flex: 0 0 auto;
+}
+
+.site-tray-warn {
+  display: block;
+  padding: 0.35rem 0.5rem;
+  border-left: 2px solid #ffc400;
+  background: rgba(255, 196, 0, 0.08);
+  color: var(--text-primary, inherit);
+}
+
+.site-tray-warn[hidden] {
+  display: none;
 }
 
 .site-tray-switch {
@@ -303,13 +328,67 @@
   cursor: pointer;
 }
 
-body.site-boundary-drawing #cesiumContainer {
+body.site-boundary-drawing #cesiumContainer,
+body.routes-picking #cesiumContainer {
   cursor: crosshair;
 }
 
-body.recording-mode #site-tray,
-body.ui-clean-view #site-tray,
+body.recording-mode .site-tray-dock,
+body.ui-clean-view .site-tray-dock,
 body.recording-mode .site-tray-panel,
 body.ui-clean-view .site-tray-panel {
   display: none;
+}
+
+/* Inspection pricing: quote table for the selected buildings */
+.site-tray-quote {
+  max-height: 14rem;
+  overflow: auto;
+}
+
+.site-tray-quote table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.site-tray-quote th,
+.site-tray-quote td {
+  padding: 0.2rem 0.35rem;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.site-tray-quote th:first-child,
+.site-tray-quote td:first-child {
+  max-width: 9rem;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+}
+
+.site-tray-quote th {
+  color: var(--text-secondary);
+  font-weight: 500;
+  border-bottom: 1px solid rgba(var(--accent-rgb), 0.25);
+}
+
+.site-tray-quote tbody tr {
+  cursor: pointer;
+}
+
+.site-tray-quote tbody tr:hover {
+  background: var(--accent-fade);
+}
+
+.site-tray-quote tfoot td {
+  color: var(--accent);
+  font-weight: 600;
+  border-top: 1px solid rgba(var(--accent-rgb), 0.25);
+}
+
+.site-tray-quote-flag {
+  color: var(--text-secondary);
 }

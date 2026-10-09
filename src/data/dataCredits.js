@@ -91,6 +91,13 @@ export function hideOsmCredit(viewer, owner) {
   return true;
 }
 
+export const USWTDB_CREDIT = {
+  key: 'uswtdb',
+  html:
+    'Wind turbines: <a href="https://energy.usgs.gov/uswtdb/" target="_blank" rel="noopener">U.S. Wind Turbine Database</a> ' +
+    '(USGS, LBNL &amp; ACP; public domain)',
+};
+
 export const DATA_CREDITS = [
   // ── Live sources ────────────────────────────────────────────────
   {
@@ -366,6 +373,15 @@ export const TOMTOM_CREDIT = {
   html:
     'Traffic flow data © ' +
     '<a href="https://www.tomtom.com" target="_blank" rel="noopener">TomTom</a>',
+};
+
+/** Registered when the FAA Airspace layer first turns on (U.S. public
+ * domain — credited as a courtesy). */
+export const FAA_AIRSPACE_CREDIT = {
+  key: 'faa-airspace',
+  html:
+    'Airspace, TFRs and UAS Facility Maps from the ' +
+    '<a href="https://adds-faa.opendata.arcgis.com" target="_blank" rel="noopener">FAA</a> (public domain; advisory, not for navigation)',
 };
 
 /** Registered when the first Natural Earth region or state/province outline

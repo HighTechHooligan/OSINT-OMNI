@@ -58,8 +58,10 @@ export class LocalSdrControls {
     feeds = null,
     radio = null,
     actions = {},
+    getMapCenter = () => null,
   }) {
     this.receiver = receiver;
+    this.getMapCenter = getMapCenter;
     this.feeds = feeds;
     this.radio = radio;
     this.actions = actions;
@@ -125,7 +127,10 @@ export class LocalSdrControls {
         await this._enableLayerWhenReceiving();
     });
     this._listen(el.locate, 'click', () => {
-      void this.receiver.requestReceiverLocation();
+      // Location denied or missing (common on Linux): use the map view instead.
+      void this.receiver.requestReceiverLocation({
+        fallback: () => this.getMapCenter(),
+      });
     });
     this._listen(el.changeDevice, 'click', async () => {
       if (this.receiver.getState().mode === 'fm') this._stopInternetRadio();

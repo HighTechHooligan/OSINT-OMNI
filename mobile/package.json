@@ -1,0 +1,31 @@
+{
+  "name": "omni-portal",
+  "private": true,
+  "version": "0.1.0",
+  "description": "OSINT OMNI phone portal: offline maps and camera-aware routing, later the secure door to the remote host.",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "node --test test/*.test.mjs",
+    "sync": "vite build && cap sync",
+    "android": "vite build && cap sync android && cap open android",
+    "ios": "vite build && cap sync ios && cap open ios"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.5.3",
+    "@capacitor/core": "^8.5.3",
+    "@capacitor/geolocation": "^8.2.3",
+    "@capacitor/ios": "^8.5.3",
+    "@capacitor/network": "^8.0.1",
+    "@mapbox/vector-tile": "^3.0.0",
+    "maplibre-gl": "^5.24.0",
+    "pbf": "^5.1.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.5.3",
+    "vite": "^7.3.7"
+  }
+}

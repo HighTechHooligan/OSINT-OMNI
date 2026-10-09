@@ -6,6 +6,7 @@ import { overpassProxy } from '../server/providers/overpass.js';
 import { militaryInstallationsProxy } from '../server/providers/military-installations.js';
 import { regionalBriefProxy } from '../server/providers/regional/briefing.js';
 import {
+  OVERPASS_PUBLIC_UPSTREAMS,
   parseOverpassUpstreams,
   resolveOverpassUpstreams,
 } from '../server/providers/overpass/constants.js';
@@ -26,8 +27,8 @@ import { buildOverpassQuery } from './layers/alpr/records.js';
 
 function env(t, value) {
   const prior = process.env.OVERPASS_UPSTREAMS;
-  if (value === undefined) delete process.env.OVERPASS_UPSTREAMS;
-  else process.env.OVERPASS_UPSTREAMS = value;
+  // No value = Overpass switched off, so these tests never reach the network.
+  process.env.OVERPASS_UPSTREAMS = value ?? 'none';
   t.after(() => {
     if (prior === undefined) delete process.env.OVERPASS_UPSTREAMS;
     else process.env.OVERPASS_UPSTREAMS = prior;
@@ -73,6 +74,8 @@ async function call(handlers, url, init = {}) {
 test('lazy configuration validates HTTP(S), allows private hosts, replaces defaults and never exposes bad values', (t) => {
   env(t);
   assert.deepEqual(resolveOverpassUpstreams(), []);
+  delete process.env.OVERPASS_UPSTREAMS;
+  assert.deepEqual(resolveOverpassUpstreams(), [...OVERPASS_PUBLIC_UPSTREAMS]);
   process.env.OVERPASS_UPSTREAMS =
     'http://localhost:1234/api, https://paid.example/query?key=secret, http://localhost:1234/api';
   assert.deepEqual(resolveOverpassUpstreams(), [
