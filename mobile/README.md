@@ -41,6 +41,16 @@ plain-http address on the open internet.
   for a week. The data counter in the download panel shows cellular vs Wi-Fi
   bytes and how much the cache saved.
 
+### My location (set by hand)
+
+Long-press the map and pick **Set my location here**, or type a place or
+`lat, lon` under **My location** at the top of the download panel. While a
+location is set, every feature (routing from "My location", turn-by-turn,
+the locate button, the Computer tab's **Radio at my spot**) uses it and the
+app never asks the GPS, so it works with location permission denied and your
+real position never leaves the phone. **Use GPS** goes back. Turn-by-turn
+does not move on its own while a location is set.
+
 ### Camera assumptions
 
 - **Read range: 40 m.** ALPR cameras such as Flock read plates reliably to

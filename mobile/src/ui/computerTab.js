@@ -25,6 +25,15 @@ const QUICK = [
 ];
 
 export function mountComputer(root, services, { openHost }) {
+  /** The desktop radio needs a receiver location; send the phone's (set or GPS). */
+  async function sendRadioSpot() {
+    try {
+      const [lon, lat] = await services.location.current();
+      send(`radio at ${lat.toFixed(5)}, ${lon.toFixed(5)} phone`);
+    } catch (error) {
+      toast(error.message || String(error));
+    }
+  }
   const link = createHostLink({ http: httpJson });
   const status = h('p.muted');
   const log = h('div.log');
@@ -49,7 +58,12 @@ export function mountComputer(root, services, { openHost }) {
         {},
         h('div.row', {}, h('label.switch', {}, liveToggle, h('span', { text: 'Live screen (every 5 s)' })), h('button', { text: 'Refresh screen', onclick: () => send('snap') })),
         screen,
-        h('div.quick', {}, QUICK.map(([text, line]) => h('button', { text, onclick: () => send(line) }))),
+        h(
+          'div.quick',
+          {},
+          QUICK.map(([text, line]) => h('button', { text, onclick: () => send(line) })),
+          h('button', { text: 'Radio at my spot', title: 'Set the desktop radio receiver to this phone’s location (the one you set by hand, else GPS)', onclick: sendRadioSpot }),
+        ),
         h(
           'form.cmd',
           {

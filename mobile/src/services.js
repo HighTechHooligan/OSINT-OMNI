@@ -8,8 +8,9 @@ import { createGeocoder } from './lib/geocode.js';
 import { createNetMeter } from './lib/netMeter.js';
 import { loadSettings, saveSettings } from './lib/settings.js';
 import { SCHEME, unwrap, rewriteTileJson } from './lib/mapStyle.js';
-import { fetchBytes, getConnection, httpPostForm, startNetworkWatch } from './lib/platform.js';
+import { currentPosition, fetchBytes, getConnection, httpPostForm, startNetworkWatch, watchPosition } from './lib/platform.js';
 import { createRoadSource } from './lib/roads.js';
+import { createLocationSource } from './lib/location.js';
 import { createWorkerSolver } from '../../src/services/routing/workerSolver.js';
 import { createSavedRoutes } from './lib/savedRoutes.js';
 import { loadLink } from './lib/hostLink.js';
@@ -112,7 +113,7 @@ export async function createServices() {
   });
 
   const listeners = new Set();
-  return {
+  const services = {
     store,
     tiles,
     cameras,
@@ -134,4 +135,10 @@ export async function createServices() {
     },
     onSettings: (fn) => listeners.add(fn),
   };
+  services.location = createLocationSource({
+    settings: () => settings,
+    updateSettings: (patch) => services.updateSettings(patch),
+    gps: { current: currentPosition, watch: watchPosition },
+  });
+  return services;
 }

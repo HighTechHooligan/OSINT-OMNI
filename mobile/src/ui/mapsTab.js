@@ -1,7 +1,7 @@
 import maplibregl from 'maplibre-gl';
 import { h, toast } from './dom.js';
 import { rewriteStyle } from '../lib/mapStyle.js';
-import { currentPosition, watchPosition, onConnectionChange } from '../lib/platform.js';
+import { onConnectionChange } from '../lib/platform.js';
 import { createNavigator, formatDistance, formatDuration, routeLengthM } from '../lib/nav.js';
 import { bboxOf } from '../lib/geo.js';
 import { openOfflinePanel } from './offlinePanel.js';
@@ -38,6 +38,7 @@ export function mountMaps(root, services) {
   const goButton = h('button.primary', { text: 'Route', onclick: () => plan() });
   const progress = h('p.progress', { hidden: true });
   const netBadge = h('span.badge');
+  const locationChip = h('div.location-chip', { hidden: true });
   const search = h(
     'section.search-card',
     {},
@@ -51,6 +52,7 @@ export function mountMaps(root, services) {
       h('label.switch', { title: 'Route around mapped ALPR cameras' }, avoidToggle, h('span', { text: 'Avoid cameras' })),
     ),
     h('div.controls-row', {}, netBadge, goButton),
+    locationChip,
     progress,
   );
   const fab = h(
@@ -151,6 +153,7 @@ export function mountMaps(root, services) {
       {},
       h('button', { text: 'Route here', onclick: () => (popup.remove(), setTo({ lonLat, label }), plan()) }),
       h('button', { text: 'Start here', onclick: () => (popup.remove(), setFrom({ lonLat, label })) }),
+      h('button', { text: 'Set my location here', onclick: () => (popup.remove(), services.location.set(lonLat, label), toast('Location set. The app will use it instead of GPS until you pick Use GPS.')) }),
     );
     popup.setDOMContent(body).addTo(map);
   }
@@ -234,7 +237,7 @@ export function mountMaps(root, services) {
     try {
       let from = state.from;
       if (!from) {
-        const lonLat = await currentPosition();
+        const lonLat = await services.location.current();
         from = { lonLat, label: 'My location' };
         setMe({ lonLat });
       }
@@ -340,7 +343,7 @@ export function mountMaps(root, services) {
   async function startNav() {
     const r = state.record;
     state.nav = createNavigator(r.route, r.cameras);
-    state.stopWatch = await watchPosition(({ lonLat, heading }) => {
+    state.stopWatch = await services.location.watch(({ lonLat, heading }) => {
       setMe({ lonLat });
       const p = state.nav.update(lonLat);
       renderNav(p);
@@ -349,7 +352,7 @@ export function mountMaps(root, services) {
     renderResult();
     root.classList.add('navigating');
     navBanner.hidden = false;
-    navBanner.replaceChildren(h('div.nav-next', { text: 'Waiting for GPS…' }));
+    if (!services.location.manual()) navBanner.replaceChildren(h('div.nav-next', { text: 'Waiting for GPS…' }));
   }
 
   function stopNav() {
@@ -384,12 +387,19 @@ export function mountMaps(root, services) {
   // ---------- misc ----------
   async function locate() {
     try {
-      const lonLat = await currentPosition();
+      const lonLat = await services.location.current();
       setMe({ lonLat });
       map.easeTo({ center: lonLat, zoom: Math.max(map.getZoom(), 14) });
+      const m = services.location.manual();
+      if (m) toast(`Using the location you set: ${m.label}. GPS is not used.`);
     } catch (error) {
-      toast(`Location unavailable: ${error.message || error}`);
+      toast(error.message || String(error));
     }
+  }
+
+  function renderLocationChip(m = services.location.manual()) {
+    locationChip.hidden = !m;
+    if (m) locationChip.replaceChildren(h('span', { text: `📍 Set location: ${m.label}` }), h('button', { text: 'Use GPS', onclick: () => services.location.clear() }));
   }
 
   function setMe(me) {
@@ -434,6 +444,20 @@ export function mountMaps(root, services) {
   }
   updateNetBadge();
   onConnectionChange(updateNetBadge);
+
+  // A location set by hand shows as the blue dot and the chip; GPS is not asked.
+  services.location.onChange((m) => {
+    renderLocationChip(m);
+    if (m) {
+      setMe({ lonLat: m.lonLat });
+      map.easeTo({ center: m.lonLat, zoom: Math.max(map.getZoom(), 13) });
+    }
+  });
+  renderLocationChip();
+  if (services.location.manual()) {
+    state.me = { lonLat: services.location.manual().lonLat };
+    map.jumpTo({ center: state.me.lonLat });
+  }
 
   return { shown: () => map.resize(), map, showRecord };
 }

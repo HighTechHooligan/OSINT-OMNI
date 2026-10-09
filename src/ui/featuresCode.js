@@ -105,6 +105,11 @@ Layers
   turbines [on | off]      US wind turbines (USGS USWTDB); bare = summary
                            of turbines in view (count, MW, tallest)
   turbines near            the turbine nearest the view centre
+Radio (local RTL-SDR receiver location, for decoding nearby aircraft)
+  radio                    show where the receiver is set
+  radio at <lat, lon>      set it by hand; no browser location needed
+  radio here               use the map view centre
+  radio gps                ask the browser's location (falls back to view)
 Airspace (FAA open data; advisory, not a clearance)
   airspace on | off        TFRs, Class B/C/D/E, special use, LAANC grid
   airspace tfr|class|sua|laanc on | off
@@ -332,6 +337,67 @@ export function createFeatureCommands({
     print(AIRSPACE_USAGE, 'err');
   }
 
+  /** Where the local RTL-SDR receiver is, set by hand or from the view. */
+  async function radioCommand(args, raw) {
+    const receiver =
+      getDataManager()?.layers?.get?.('local-adsb')?.module?.receiver;
+    if (!receiver)
+      return print('The local radio receiver is not available', 'err');
+    const word = String(args[0] ?? '').toLowerCase();
+    const view = () => {
+      const at = getViewCenter();
+      return at ? { latitude: at.lat, longitude: at.lon } : null;
+    };
+    if (!word) {
+      const st = receiver.getState();
+      const at = st.receiverLocation;
+      return print(
+        at
+          ? `Receiver at ${at.latitude.toFixed(5)}, ${at.longitude.toFixed(5)} (${st.locationSource ?? 'set'})`
+          : 'Receiver location not set. Usage: radio at <lat, lon> | here | gps',
+        'dim',
+      );
+    }
+    if (word === 'here') {
+      const at = view();
+      if (!at || !receiver.setReceiverLocation(at, { source: 'map' }))
+        return print('No map view to use', 'err');
+      return print(
+        `Receiver at the map view: ${at.latitude.toFixed(5)}, ${at.longitude.toFixed(5)}`,
+        'ok',
+      );
+    }
+    if (word === 'gps') {
+      const ok = await receiver.requestReceiverLocation({ fallback: view });
+      return print(
+        receiver.getState().message || (ok ? 'Located' : 'No location'),
+        ok ? 'ok' : 'err',
+      );
+    }
+    if (word === 'at') {
+      const m =
+        /^\s*at\s+(-?\d+(?:\.\d+)?)\s*[,\s]\s*(-?\d+(?:\.\d+)?)\s*(phone)?\s*$/i.exec(
+          raw,
+        );
+      const spot = m && { latitude: Number(m[1]), longitude: Number(m[2]) };
+      if (
+        !spot ||
+        !receiver.setReceiverLocation(spot, {
+          source: m[3] ? 'phone' : 'manual',
+        })
+      )
+        return print(
+          'Usage: radio at <lat, lon>, e.g. radio at 30.2672, -97.7431',
+          'err',
+        );
+      return print(
+        `Receiver at ${spot.latitude.toFixed(5)}, ${spot.longitude.toFixed(5)}`,
+        'ok',
+      );
+    }
+    print('Usage: radio | radio at <lat, lon> | radio here | radio gps', 'err');
+  }
+
   /** Turn a data layer on/off (null toggles) through the data manager. */
   async function setLayer(id, want, label = id) {
     const dm = getDataManager();
@@ -343,6 +409,7 @@ export function createFeatureCommands({
   }
 
   const commands = {
+    radio: radioCommand,
     airspace: airspaceCommand,
     help: () => print(FEATURES_CODE_HELP, 'dim'),
     cls: () => clearOutput(),

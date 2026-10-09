@@ -43,6 +43,7 @@ export function openOfflinePanel(services, { map }) {
     }
 
     body.replaceChildren(
+      locationSection(services, map, render),
       downloadSection,
       h(
         'section',
@@ -150,6 +151,48 @@ async function downloadRegion(services, { id, name, bbox, plan, job, onProgress 
   const record = { id, name, bbox, tiles: done, failed, bytes, cameras, at: Date.now(), complete: !job.cancelled };
   await services.store.put('regions', id, record);
   return record;
+}
+
+/** My location: set by hand (no GPS, no location permission) or back to GPS. */
+function locationSection(services, map, rerender) {
+  const m = services.location.manual();
+  const input = h('input', { type: 'search', placeholder: 'lat, lon or a place', 'aria-label': 'My location', value: m?.label || '' });
+  const set = async () => {
+    try {
+      const [hit] = await services.geocoder.search(input.value);
+      if (!hit) return toast('No place found. Try "lat, lon".');
+      services.location.set([hit.lon, hit.lat], hit.label);
+      toast('Location set. GPS is not used until you pick Use GPS.');
+      rerender();
+    } catch (error) {
+      toast(error.message || String(error));
+    }
+  };
+  input.addEventListener('keydown', (e) => e.key === 'Enter' && set());
+  return h(
+    'section',
+    {},
+    h('h3', { text: 'My location' }),
+    h('p.muted', {
+      text: m
+        ? `Set by hand: ${m.label}. The app does not use the GPS and needs no location permission.`
+        : 'From the GPS. Set it by hand to keep your real position private, or when location is turned off for this app.',
+    }),
+    h('div.row', {}, input, h('button.primary', { text: 'Set', onclick: set })),
+    h(
+      'div.row',
+      {},
+      h('button', {
+        text: 'Use map center',
+        onclick: () => {
+          const c = map.getCenter();
+          services.location.set([c.lng, c.lat]);
+          rerender();
+        },
+      }),
+      m ? h('button', { text: 'Use GPS', onclick: () => (services.location.clear(), rerender()) }) : '',
+    ),
+  );
 }
 
 function settingsSection(services, rerender) {

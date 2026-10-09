@@ -127,3 +127,6 @@ progress { width: 100%; accent-color: var(--accent); }
 .tool-out { white-space: pre-wrap; font-size: 12px; background: rgba(255, 255, 255, 0.05); padding: 8px; border-radius: 8px; max-height: 40vh; overflow: auto; }
 .unpaired { display: grid; gap: 8px; }
 .tabbar button span { font-size: 11px; }
+.location-chip { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; padding: 6px 8px; border-radius: 10px; background: rgba(var(--accent-rgb), 0.12); font-size: 12px; }
+.location-chip[hidden] { display: none; }
+.location-chip button { padding: 4px 10px; font-size: 12px; }

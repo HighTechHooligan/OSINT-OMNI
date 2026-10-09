@@ -20,6 +20,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   cellularSaver: true,
   routeMaxAgeHours: 24,
   tileBudgetMB: 512,
+  /** {lonLat, label, at} set by hand; the GPS is not used while it is set. */
+  manualLocation: null,
 });
 
 const KEY = 'omni-portal.settings';

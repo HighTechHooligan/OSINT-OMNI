@@ -627,3 +627,38 @@ test('budget shows, switches profiles, sets one budget and resets', async () => 
   assert.equal(await h.run('budget workers'), true);
   assert.match(h.lines.at(-1).text, /^Usage: budget/);
 });
+
+test('radio sets the receiver location by hand, from the view or the phone', async () => {
+  const set = [];
+  const receiver = {
+    state: { receiverLocation: null, locationSource: null },
+    getState() {
+      return this.state;
+    },
+    setReceiverLocation(at, { source }) {
+      set.push([at, source]);
+      this.state = { receiverLocation: at, locationSource: source };
+      return true;
+    },
+  };
+  const dm = { layers: new Map([['local-adsb', { module: { receiver } }]]) };
+  const { run, lines } = harness({
+    getDataManager: () => dm,
+    getViewCenter: () => ({ lon: -93.26, lat: 44.97 }),
+  });
+  await run('radio');
+  assert.match(lines.at(-1).text, /not set/);
+  await run('radio at 30.2672, -97.7431');
+  assert.deepEqual(set.at(-1), [
+    { latitude: 30.2672, longitude: -97.7431 },
+    'manual',
+  ]);
+  await run('radio at 30.2672 -97.7431 phone');
+  assert.equal(set.at(-1)[1], 'phone');
+  await run('radio here');
+  assert.deepEqual(set.at(-1), [{ latitude: 44.97, longitude: -93.26 }, 'map']);
+  await run('radio');
+  assert.match(lines.at(-1).text, /44\.97000, -93\.26000 \(map\)/);
+  await run('radio at nowhere');
+  assert.equal(lines.at(-1).tone, 'err');
+});
