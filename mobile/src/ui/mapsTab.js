@@ -5,6 +5,7 @@ import { onConnectionChange } from '../lib/platform.js';
 import { createNavigator, formatDistance, formatDuration, routeLengthM } from '../lib/nav.js';
 import { bboxOf } from '../lib/geo.js';
 import { openOfflinePanel } from './offlinePanel.js';
+import { coverageGeoJSON } from '../../../src/services/routing/cameraView.js';
 
 const ACCENT = () => getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#b347f0';
 const MODES = [
@@ -96,7 +97,7 @@ export function mountMaps(root, services) {
 
   function addOverlays() {
     const empty = { type: 'FeatureCollection', features: [] };
-    for (const id of ['baseline', 'route', 'cameras', 'me', 'pins'])
+    for (const id of ['baseline', 'route', 'cameras', 'cover', 'me', 'pins'])
       if (!map.getSource(id)) map.addSource(id, { type: 'geojson', data: empty });
     if (!map.getLayer('baseline'))
       map.addLayer({ id: 'baseline', type: 'line', source: 'baseline', paint: { 'line-color': '#8a8aa0', 'line-width': 4, 'line-dasharray': [1.5, 1.5], 'line-opacity': 0.8 } });
@@ -104,6 +105,19 @@ export function mountMaps(root, services) {
       map.addLayer({ id: 'route-casing', type: 'line', source: 'route', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#0b0b12', 'line-width': 9 } });
     if (!map.getLayer('route'))
       map.addLayer({ id: 'route', type: 'line', source: 'route', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': ACCENT(), 'line-width': 6 } });
+    // Each camera's read zone (its coverage polygon); routes go around these.
+    if (!map.getLayer('cover'))
+      map.addLayer({
+        id: 'cover',
+        type: 'fill',
+        source: 'cover',
+        layout: { visibility: s().showCameras ? 'visible' : 'none' },
+        paint: {
+          'fill-color': ['case', ['get', 'onRoute'], '#ff4d6a', '#52d4ff'],
+          'fill-opacity': 0.22,
+          'fill-outline-color': ['case', ['get', 'onRoute'], '#ff4d6a', '#52d4ff'],
+        },
+      });
     if (!map.getLayer('cameras'))
       map.addLayer({
         id: 'cameras',
@@ -277,6 +291,19 @@ export function mountMaps(root, services) {
     refreshCameraDots(record);
   }
 
+  function setCameras(cameras, onRoute = new Set()) {
+    map.getSource('cameras')?.setData({
+      type: 'FeatureCollection',
+      features: cameras.map((c) => ({
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: [c.lon, c.lat] },
+        properties: { onRoute: onRoute.has(c.id), brand: c.brand, operator: c.operator },
+      })),
+    });
+    const view = { rangeM: s().cameraRangeM, frontPlates: s().cameraFrontPlates };
+    map.getSource('cover')?.setData(coverageGeoJSON(cameras, view, (c) => ({ onRoute: onRoute.has(c.id) })));
+  }
+
   async function refreshCameraDots(record) {
     const onRoute = new Set((record?.cameras || []).map((c) => c.id));
     let all = record?.cameras || [];
@@ -286,14 +313,7 @@ export function mountMaps(root, services) {
     } catch {
       /* dots for on-route cameras still show */
     }
-    map.getSource('cameras')?.setData({
-      type: 'FeatureCollection',
-      features: all.map((c) => ({
-        type: 'Feature',
-        geometry: { type: 'Point', coordinates: [c.lon, c.lat] },
-        properties: { onRoute: onRoute.has(c.id), brand: c.brand, operator: c.operator },
-      })),
-    });
+    setCameras(all, onRoute);
   }
 
   function renderResult() {
@@ -417,7 +437,7 @@ export function mountMaps(root, services) {
   function toggleCameras() {
     const show = !s().showCameras;
     services.updateSettings({ showCameras: show });
-    if (map.getLayer('cameras')) map.setLayoutProperty('cameras', 'visibility', show ? 'visible' : 'none');
+    for (const id of ['cameras', 'cover']) if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', show ? 'visible' : 'none');
     if (show && !state.record) showCamerasInView();
     toast(show ? 'Showing mapped ALPR cameras' : 'Cameras hidden');
   }
@@ -427,10 +447,7 @@ export function mountMaps(root, services) {
     const b = map.getBounds();
     try {
       const { cameras } = await services.cameras.forBbox([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]);
-      map.getSource('cameras')?.setData({
-        type: 'FeatureCollection',
-        features: cameras.map((c) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [c.lon, c.lat] }, properties: { onRoute: false, brand: c.brand, operator: c.operator } })),
-      });
+      setCameras(cameras);
     } catch (error) {
       toast(`Cameras unavailable: ${error.message}`);
     }

@@ -5,6 +5,7 @@
  */
 import * as Cesium from 'cesium';
 import { createRoutePlanner, describeRoute } from './routePlanner.js';
+import { coveragePolygons } from './routing/cameraView.js';
 import { createWorkerSolver } from './routing/workerSolver.js';
 
 /** Fallbacks for when the theme tokens are not readable (tests, panel builds). */
@@ -115,8 +116,20 @@ export function createSiteRoutes(viewer, { planner, fetchImpl, geocode } = {}) {
       },
     });
     const passedIds = new Set(r.passed.map((c) => c.id));
-    const cameraDot = (c, css, text) =>
-      source.entities.add({
+    // The read zone the router steered around (or could not avoid).
+    const cover = (c, css) => {
+      for (const ring of coveragePolygons(c, r.view))
+        source.entities.add({
+          polygon: {
+            hierarchy: positions(ring.slice(0, -1)),
+            material: Cesium.Color.fromCssColorString(css).withAlpha(0.25),
+            classificationType: Cesium.ClassificationType.BOTH,
+          },
+        });
+    };
+    const cameraDot = (c, css, text) => {
+      cover(c, css);
+      return source.entities.add({
         position: Cesium.Cartesian3.fromDegrees(c.lon, c.lat),
         point: {
           pixelSize: 11,
@@ -128,6 +141,7 @@ export function createSiteRoutes(viewer, { planner, fetchImpl, geocode } = {}) {
         },
         description: text,
       });
+    };
     for (const c of r.passed)
       cameraDot(
         c,

@@ -311,6 +311,7 @@ export function createRoutePlanner({
       baseline: usual,
       baselineCameras,
       baselineCount,
+      view: viewOpts,
       message: cameraMessage(solved, { baselineCount }),
       extraTimeS: usual ? solved.route.time - usual.timeS : null,
       stats: {
