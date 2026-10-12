@@ -1,4 +1,11 @@
-import { angleDiff, bearingDeg, createGrid, haversineM } from './routeGeo.js';
+import {
+  angleDiff,
+  bearingDeg,
+  createGrid,
+  fromLocal,
+  haversineM,
+  toLocal,
+} from './routeGeo.js';
 
 /**
  * Which stretches of road a mapped ALPR camera can read plates on.
@@ -22,7 +29,6 @@ export const VIEW_DEFAULTS = Object.freeze({
   rangeM: 40,
   halfAngleDeg: 30,
   frontPlates: true,
-  sampleM: 6,
 });
 
 const CARDINAL = {
@@ -65,36 +71,181 @@ export function parseDirections(raw) {
   return out;
 }
 
+// ---- coverage polygons ----
+//
+// Each camera's coverage is a 2D polygon on a flat local frame (metres east
+// and north of the camera): a sector for every mapped direction, a disc when
+// none is mapped. Road segments are clipped against the polygons exactly, so
+// a short stretch of road cutting a corner of a cone is caught however the
+// road is sampled. A camera can also carry its own `coverage` ring of
+// [lon, lat] points (a hand-surveyed field of view), used instead.
+
+const RAD = Math.PI / 180;
+/** Largest angle between polygon vertices along an arc. */
+const ARC_STEP_DEG = 6;
+
+/** Arc points from bearing b0 to b1 (clockwise), pushed out so the polygon's
+ * straight edges never fall inside the true arc. */
+function arcPoints(rangeM, b0, b1) {
+  const span = b1 - b0;
+  const n = Math.max(1, Math.ceil(span / ARC_STEP_DEG));
+  const r = rangeM / Math.cos(((span / n) * RAD) / 2);
+  const out = [];
+  for (let i = 0; i <= n; i++) {
+    const b = (b0 + (span * i) / n) * RAD;
+    out.push([r * Math.sin(b), r * Math.cos(b)]);
+  }
+  return out;
+}
+
+/**
+ * Coverage polygons of one camera in local metres around it: arrays of
+ * [east, north] rings (open, no repeated first point).
+ */
+export function coverageRingsLocal(camera, opts = VIEW_DEFAULTS) {
+  const o = { ...VIEW_DEFAULTS, ...opts };
+  if (Array.isArray(camera.coverage) && camera.coverage.length >= 3) {
+    const at = [camera.lon, camera.lat];
+    return [camera.coverage.map((p) => toLocal(p, at))];
+  }
+  const dirs = camera.directions ?? parseDirections(camera.direction);
+  const half = Math.min(180, Math.max(0, o.halfAngleDeg));
+  if (!dirs.length || half >= 180) {
+    const ring = arcPoints(o.rangeM, 0, 360);
+    ring.pop(); // 360 repeats 0
+    return [ring];
+  }
+  return dirs.map((dir) => [
+    [0, 0],
+    ...arcPoints(o.rangeM, dir - half, dir + half),
+  ]);
+}
+
+/** Coverage polygons of one camera as closed [lon, lat] rings (GeoJSON order). */
+export function coveragePolygons(camera, opts = VIEW_DEFAULTS) {
+  const at = [camera.lon, camera.lat];
+  return coverageRingsLocal(camera, opts).map((ring) => {
+    const out = ring.map((p) => fromLocal(p, at));
+    out.push(out[0]);
+    return out;
+  });
+}
+
+/** GeoJSON FeatureCollection of camera coverage, one feature per camera. */
+export function coverageGeoJSON(cameras, opts = {}, properties = () => ({})) {
+  return {
+    type: 'FeatureCollection',
+    features: cameras
+      .filter((c) => Number.isFinite(c.lon) && Number.isFinite(c.lat))
+      .map((c) => ({
+        type: 'Feature',
+        geometry: {
+          type: 'MultiPolygon',
+          coordinates: coveragePolygons(c, opts).map((ring) => [ring]),
+        },
+        properties: { id: c.id, ...properties(c) },
+      })),
+  };
+}
+
+function pointInRing(x, y, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i];
+    const [xj, yj] = ring[j];
+    if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi)
+      inside = !inside;
+  }
+  return inside;
+}
+
+/**
+ * Parameter intervals [t0, t1] of the segment p→q (0..1) that lie inside a
+ * ring. Works for any simple polygon, convex or not.
+ */
+export function segmentInsideRing(p, q, ring) {
+  const ts = [0, 1];
+  const dx = q[0] - p[0];
+  const dy = q[1] - p[1];
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const ex = ring[i][0] - ring[j][0];
+    const ey = ring[i][1] - ring[j][1];
+    const den = dx * ey - dy * ex;
+    if (Math.abs(den) < 1e-12) continue; // parallel
+    const wx = ring[j][0] - p[0];
+    const wy = ring[j][1] - p[1];
+    const t = (wx * ey - wy * ex) / den;
+    const u = (wx * dy - wy * dx) / den;
+    if (t > 0 && t < 1 && u >= 0 && u <= 1) ts.push(t);
+  }
+  ts.sort((a, b) => a - b);
+  const out = [];
+  for (let i = 1; i < ts.length; i++) {
+    const t0 = ts[i - 1];
+    const t1 = ts[i];
+    if (t1 - t0 < 1e-9) continue;
+    const m = (t0 + t1) / 2;
+    if (!pointInRing(p[0] + dx * m, p[1] + dy * m, ring)) continue;
+    const last = out.at(-1);
+    if (last && t0 - last[1] < 1e-9) last[1] = t1;
+    else out.push([t0, t1]);
+  }
+  return out;
+}
+
+/**
+ * Whether a camera, given its local coverage rings, reads the plate of a car
+ * driving the local segment p→q (metres around the camera).
+ */
+function ringsSeeSegment(rings, p, q, frontPlates) {
+  const dx = q[0] - p[0];
+  const dy = q[1] - p[1];
+  for (const ring of rings)
+    for (const [t0, t1] of segmentInsideRing(p, q, ring)) {
+      if (frontPlates) return true;
+      // Rear plate only: the car must be moving away from the camera, which
+      // on a straight segment is every point past its closest approach.
+      const len2 = dx * dx + dy * dy;
+      const tAway = len2 ? -(p[0] * dx + p[1] * dy) / len2 : 0;
+      if (t1 > tAway) return true;
+    }
+  return false;
+}
+
 /** Whether one camera reads the plate of a car at point p heading `heading`. */
 export function cameraSees(camera, p, heading, opts = VIEW_DEFAULTS) {
   const o = { ...VIEW_DEFAULTS, ...opts };
   const at = [camera.lon, camera.lat];
   const d = haversineM(at, p);
-  if (d > o.rangeM) return false;
   if (d < 1) return true;
-  const toCar = bearingDeg(at, p);
-  const dirs = camera.directions ?? parseDirections(camera.direction);
-  if (
-    dirs.length &&
-    !dirs.some((dir) => angleDiff(dir, toCar) <= o.halfAngleDeg)
-  )
+  const [x, y] = toLocal(p, at);
+  if (!coverageRingsLocal(camera, o).some((ring) => pointInRing(x, y, ring)))
     return false;
   // Moving away from the camera shows the rear plate; toward it, the front.
-  const away = angleDiff(heading, toCar) < 90;
+  const away = angleDiff(heading, bearingDeg(at, p)) < 90;
   return away || o.frontPlates;
 }
 
 /**
  * Index cameras for repeated "who sees this road segment" questions.
- * @param {Array<{id:any, lon:number, lat:number, direction?:any}>} cameras
+ * @param {Array<{id:any, lon:number, lat:number, direction?:any, coverage?:Array}>} cameras
  */
 export function createCameraIndex(cameras, opts = {}) {
   const o = { ...VIEW_DEFAULTS, ...opts };
   const list = cameras
     .filter((c) => Number.isFinite(c.lon) && Number.isFinite(c.lat))
-    .map((c) => ({ ...c, directions: parseDirections(c.direction) }));
+    .map((c) => {
+      const cam = { ...c, directions: parseDirections(c.direction) };
+      cam.rings = coverageRingsLocal(cam, o);
+      cam.reachM = Math.max(
+        1,
+        ...cam.rings.flat().map(([x, y]) => Math.hypot(x, y)),
+      );
+      return cam;
+    });
   const lat = list.length ? list[0].lat : 0;
-  const cellM = Math.max(50, o.rangeM * 2);
+  const maxReach = list.reduce((m, c) => Math.max(m, c.reachM), o.rangeM);
+  const cellM = Math.max(50, maxReach * 2);
   const grid = createGrid(cellM, lat);
   // Cells within reach of some camera; most road segments touch none of them.
   const hot = new Set();
@@ -116,27 +267,27 @@ export function createCameraIndex(cameras, opts = {}) {
   return {
     size: list.length,
     options: o,
-    /** Ids of cameras that read a car driving from a to b. */
+    /** Ids of cameras whose coverage polygon a car driving a to b crosses. */
     segmentSeenBy(a, b) {
       if (!list.length) return null;
       const len = haversineM(a, b);
       if (!touchesHot(a, b, len)) return null;
       const mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-      const near = grid.near(mid[0], mid[1], len / 2 + o.rangeM);
+      const near = grid.near(mid[0], mid[1], len / 2 + maxReach);
       if (!near.length) return null;
-      const heading = bearingDeg(a, b);
-      const steps = Math.max(1, Math.ceil(len / o.sampleM));
       let seen = null;
       for (const cam of near) {
-        if (haversineM([cam.lon, cam.lat], mid) > len / 2 + o.rangeM) continue;
-        for (let i = 0; i <= steps; i++) {
-          const t = i / steps;
-          const p = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
-          if (cameraSees(cam, p, heading, o)) {
-            (seen ??= []).push(cam.id);
-            break;
-          }
-        }
+        const at = [cam.lon, cam.lat];
+        if (haversineM(at, mid) > len / 2 + cam.reachM) continue;
+        if (
+          ringsSeeSegment(
+            cam.rings,
+            toLocal(a, at),
+            toLocal(b, at),
+            o.frontPlates,
+          )
+        )
+          (seen ??= []).push(cam.id);
       }
       return seen;
     },

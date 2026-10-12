@@ -4,6 +4,9 @@ import {
   cameraSees,
   parseDirections,
   createCameraIndex,
+  coveragePolygons,
+  coverageGeoJSON,
+  segmentInsideRing,
 } from './cameraView.js';
 import { PROFILES, parseMaxspeed } from './roadProfiles.js';
 import { solveRoute } from './solveRoute.js';
@@ -13,7 +16,7 @@ import {
   corridorPlan,
 } from './cameraAwareRoute.js';
 import { parseRoadResponse, roadQuery, mergeWays } from './overpassRoads.js';
-import { tilesNearLine, haversineM } from './routeGeo.js';
+import { tilesNearLine, haversineM, fromLocal } from './routeGeo.js';
 
 // A grid town near Austin: avenues run east-west every ~220 m (lat step 0.002),
 // streets north-south every ~190 m (lon step 0.002). Node ids are row*100+col.
@@ -99,6 +102,93 @@ test('a camera facing along one road does not see the cross street', () => {
   const index = createCameraIndex([cam]);
   assert.deepEqual(index.segmentSeenBy(at(0, 2), at(0, 3)), ['j']);
   assert.equal(index.segmentSeenBy(at(0, 2), at(1, 2)), null); // Street 2 heading north
+});
+
+test('coverage polygons: a sector per direction, a disc without one', () => {
+  const cam = { lon: LON0, lat: LAT0 };
+  const disc = coveragePolygons(cam);
+  assert.equal(disc.length, 1);
+  assert.deepEqual(disc[0][0], disc[0].at(-1)); // closed ring
+  // Every vertex sits at or just beyond the read range, never inside it.
+  for (const p of disc[0]) {
+    const d = haversineM([LON0, LAT0], p);
+    assert.ok(d >= 39.9 && d < 41, `vertex at ${d} m`);
+  }
+  const two = coveragePolygons({ ...cam, direction: '90;270' });
+  assert.equal(two.length, 2);
+  assert.deepEqual(two[0][0], [LON0, LAT0]); // sector apex is the camera
+  const fc = coverageGeoJSON([{ ...cam, id: 'x', direction: 0 }], {}, () => ({
+    onRoute: true,
+  }));
+  assert.equal(fc.features[0].geometry.type, 'MultiPolygon');
+  assert.equal(fc.features[0].properties.onRoute, true);
+});
+
+test('segment clipping finds the stretch inside any polygon', () => {
+  const square = [
+    [0, 0],
+    [10, 0],
+    [10, 10],
+    [0, 10],
+  ];
+  assert.deepEqual(segmentInsideRing([-5, 5], [15, 5], square), [[0.25, 0.75]]);
+  assert.deepEqual(segmentInsideRing([-5, 20], [15, 20], square), []);
+  // A U shape: the line crosses both arms but not the notch between them.
+  const u = [
+    [0, 0],
+    [30, 0],
+    [30, 20],
+    [20, 20],
+    [20, 5],
+    [10, 5],
+    [10, 20],
+    [0, 20],
+  ];
+  const parts = segmentInsideRing([-10, 10], [40, 10], u);
+  assert.equal(parts.length, 2);
+  assert.ok(
+    Math.abs(parts[0][0] - 0.2) < 1e-9 && Math.abs(parts[0][1] - 0.4) < 1e-9,
+  );
+});
+
+test('a road clipping only the corner of a cone counts, however long the segment', () => {
+  // Camera faces north; a 400 m east-west segment passes 39 m north of it,
+  // cutting the top of the cone over a couple of metres only.
+  const cam = { id: 'c', lon: LON0, lat: LAT0, direction: 0 };
+  const a = fromLocal([-200, 39], [LON0, LAT0]);
+  const b = fromLocal([200, 39], [LON0, LAT0]);
+  const index = createCameraIndex([cam]);
+  assert.deepEqual(index.segmentSeenBy(a, b), ['c']);
+  const c = fromLocal([-200, 45], [LON0, LAT0]);
+  const d = fromLocal([200, 45], [LON0, LAT0]);
+  assert.equal(index.segmentSeenBy(c, d), null);
+});
+
+test('rear plates only: the cone must be left while driving away', () => {
+  // Camera faces east; the road runs east-west straight through the cone.
+  const cam = { id: 'r', lon: LON0, lat: LAT0, direction: 90 };
+  const index = createCameraIndex([cam], { frontPlates: false });
+  const near = fromLocal([5, 0], [LON0, LAT0]);
+  const far = fromLocal([35, 0], [LON0, LAT0]);
+  assert.deepEqual(index.segmentSeenBy(near, far), ['r']); // away: rear plate
+  assert.equal(index.segmentSeenBy(far, near), null); // toward: front only
+});
+
+test('a hand-surveyed coverage ring replaces the default cone', () => {
+  const ring = [
+    [60, -5],
+    [90, -5],
+    [90, 5],
+    [60, 5],
+  ].map((p) => fromLocal(p, [LON0, LAT0]));
+  const cam = { id: 'h', lon: LON0, lat: LAT0, direction: 90, coverage: ring };
+  const index = createCameraIndex([cam]);
+  const a = fromLocal([0, -20], [LON0, LAT0]);
+  const b = fromLocal([0, 20], [LON0, LAT0]);
+  assert.equal(index.segmentSeenBy(a, b), null); // right by the pole, but outside
+  const c = fromLocal([75, -20], [LON0, LAT0]);
+  const d = fromLocal([75, 20], [LON0, LAT0]);
+  assert.deepEqual(index.segmentSeenBy(c, d), ['h']);
 });
 
 test('maxspeed parsing', () => {

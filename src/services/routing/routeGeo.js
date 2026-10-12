@@ -45,6 +45,14 @@ export function toLocal(p, origin) {
   ];
 }
 
+/** Inverse of toLocal: [lon, lat] of a point metres east/north of origin. */
+export function fromLocal([x, y], origin) {
+  return [
+    origin[0] + x / (M_PER_DEG * Math.cos(origin[1] * RAD)),
+    origin[1] + y / M_PER_DEG,
+  ];
+}
+
 /** [west, south, east, north] around points, padded by padM metres. */
 export function bboxOf(points, padM = 0) {
   let w = Infinity;
