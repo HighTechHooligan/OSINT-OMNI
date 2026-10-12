@@ -2,13 +2,15 @@
 
 ## [Unreleased]
 
-- **Camera avoidance uses 2D coverage polygons**: each mapped ALPR camera's
-  read zone is now a polygon (a sector per mapped direction, a disc when none
-  is mapped, or a camera's own `coverage` ring), and the router clips every
-  road segment against those polygons exactly instead of testing points every
-  6 m against a range and angle. The polygons are drawn on the phone map
-  (with Show cameras) and on the globe for the cameras a route passes or
-  avoids (`src/services/routing/cameraView.js`).
+- **Camera avoidance uses 2D coverage triangles**: each mapped ALPR camera's
+  read zone is now a plain 2D triangle (apex at the camera, ±30° of its
+  mapped direction, a straight far edge 40 m out), a hexagon when no
+  direction is mapped, or a camera's own `coverage` ring. Road edges that
+  enter a triangle get the router's heavy camera cost, so routes steer clear
+  naturally; there is no per-point range and angle sampling any more. The
+  triangles are drawn on the phone map (with Show cameras) and on the globe
+  for the cameras a route passes or avoids
+  (`src/services/routing/cameraView.js`).
 - **Machine use: more CPU, GPU and RAM**: a new budget service
   (`src/services/resourceBudgets.js`) with four profiles: light, balanced
   (the old limits), high (new default) and max. High runs viewshed routes

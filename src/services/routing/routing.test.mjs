@@ -104,19 +104,20 @@ test('a camera facing along one road does not see the cross street', () => {
   assert.equal(index.segmentSeenBy(at(0, 2), at(1, 2)), null); // Street 2 heading north
 });
 
-test('coverage polygons: a sector per direction, a disc without one', () => {
+test('coverage polygons: a triangle per direction, a hexagon without one', () => {
   const cam = { lon: LON0, lat: LAT0 };
-  const disc = coveragePolygons(cam);
-  assert.equal(disc.length, 1);
-  assert.deepEqual(disc[0][0], disc[0].at(-1)); // closed ring
-  // Every vertex sits at or just beyond the read range, never inside it.
-  for (const p of disc[0]) {
-    const d = haversineM([LON0, LAT0], p);
-    assert.ok(d >= 39.9 && d < 41, `vertex at ${d} m`);
-  }
+  const around = coveragePolygons(cam);
+  assert.equal(around.length, 1);
+  assert.equal(around[0].length, 7); // six corners, closed
+  assert.deepEqual(around[0][0], around[0].at(-1));
+  const tri = coveragePolygons({ ...cam, direction: 0 })[0];
+  assert.equal(tri.length, 4); // apex, two corners, closed
+  // The far edge ends 40 m straight out from the camera.
+  const farMid = [(tri[1][0] + tri[2][0]) / 2, (tri[1][1] + tri[2][1]) / 2];
+  assert.ok(Math.abs(haversineM([LON0, LAT0], farMid) - 40) < 0.1);
   const two = coveragePolygons({ ...cam, direction: '90;270' });
   assert.equal(two.length, 2);
-  assert.deepEqual(two[0][0], [LON0, LAT0]); // sector apex is the camera
+  assert.deepEqual(two[0][0], [LON0, LAT0]); // triangle apex is the camera
   const fc = coverageGeoJSON([{ ...cam, id: 'x', direction: 0 }], {}, () => ({
     onRoute: true,
   }));
@@ -151,9 +152,9 @@ test('segment clipping finds the stretch inside any polygon', () => {
   );
 });
 
-test('a road clipping only the corner of a cone counts, however long the segment', () => {
+test('a road clipping only the tip of a triangle counts, however long the segment', () => {
   // Camera faces north; a 400 m east-west segment passes 39 m north of it,
-  // cutting the top of the cone over a couple of metres only.
+  // crossing the triangle just short of its far edge.
   const cam = { id: 'c', lon: LON0, lat: LAT0, direction: 0 };
   const a = fromLocal([-200, 39], [LON0, LAT0]);
   const b = fromLocal([200, 39], [LON0, LAT0]);
@@ -165,7 +166,7 @@ test('a road clipping only the corner of a cone counts, however long the segment
 });
 
 test('rear plates only: the cone must be left while driving away', () => {
-  // Camera faces east; the road runs east-west straight through the cone.
+  // Camera faces east; the road runs east-west straight through the triangle.
   const cam = { id: 'r', lon: LON0, lat: LAT0, direction: 90 };
   const index = createCameraIndex([cam], { frontPlates: false });
   const near = fromLocal([5, 0], [LON0, LAT0]);
@@ -174,7 +175,7 @@ test('rear plates only: the cone must be left while driving away', () => {
   assert.equal(index.segmentSeenBy(far, near), null); // toward: front only
 });
 
-test('a hand-surveyed coverage ring replaces the default cone', () => {
+test('a hand-surveyed coverage ring replaces the default triangle', () => {
   const ring = [
     [60, -5],
     [90, -5],

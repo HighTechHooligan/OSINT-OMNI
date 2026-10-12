@@ -10,19 +10,21 @@ import {
 /**
  * Which stretches of road a mapped ALPR camera can read plates on.
  *
+ * Each camera's coverage is a 2D triangle (see coverage polygons below).
  * Assumptions (stated so they can be tuned, not because they are exact):
  * - Read range 30 m (about 100 ft), the top of the capture distance vendors
  *   quote for pole-mounted plate readers such as Flock's Falcon, plus 10 m
  *   because OpenStreetMap positions are hand-placed and often off by a lane
  *   or a sidewalk. Effective radius: 40 m.
- * - A camera with a mapped `direction` sees a cone 30 degrees either side of
- *   it (typical ALPR lenses are 30-45 degrees wide; the rest is aiming and
- *   mapping slack). Without a direction it is treated as seeing all round.
+ * - A camera with a mapped `direction` sees a triangle 30 degrees either side
+ *   of it, ending 40 m out (typical ALPR lenses are 30-45 degrees wide; the
+ *   rest is aiming and mapping slack). Without a direction it is treated as
+ *   seeing all round (a hexagon).
  * - A plate is readable when the camera faces it: the rear plate of a car
  *   driving away from the camera, and (when `frontPlates` is on, the
  *   default, since most states require them) the front plate of a car
- *   driving toward it. So a car moving through the cone is seen either way
- *   by default, and only the cone (which road, which side of a junction)
+ *   driving toward it. So a car moving through the triangle is seen either way
+ *   by default, and only the triangle (which road, which side of a junction)
  *   decides; turning front plates off makes the direction of travel count.
  */
 export const VIEW_DEFAULTS = Object.freeze({
@@ -73,29 +75,34 @@ export function parseDirections(raw) {
 
 // ---- coverage polygons ----
 //
-// Each camera's coverage is a 2D polygon on a flat local frame (metres east
-// and north of the camera): a sector for every mapped direction, a disc when
-// none is mapped. Road segments are clipped against the polygons exactly, so
-// a short stretch of road cutting a corner of a cone is caught however the
-// road is sampled. A camera can also carry its own `coverage` ring of
-// [lon, lat] points (a hand-surveyed field of view), used instead.
+// Each camera's coverage is a plain 2D polygon on a flat local frame (metres
+// east and north of the camera), with no line-of-sight or viewshed work:
+// - a triangle for every mapped direction: apex at the camera, opening
+//   halfAngleDeg either side, ending in a straight edge rangeM out;
+// - a hexagon of the same reach when no direction is mapped.
+// A road edge that enters a polygon gets the router's heavy camera cost
+// (pathSearch.js), so routes stay clear of the triangles unless there is no
+// other way. A camera can also carry its own `coverage` ring of [lon, lat]
+// points (a hand-surveyed field of view), used instead.
 
 const RAD = Math.PI / 180;
-/** Largest angle between polygon vertices along an arc. */
-const ARC_STEP_DEG = 6;
 
-/** Arc points from bearing b0 to b1 (clockwise), pushed out so the polygon's
- * straight edges never fall inside the true arc. */
-function arcPoints(rangeM, b0, b1) {
-  const span = b1 - b0;
-  const n = Math.max(1, Math.ceil(span / ARC_STEP_DEG));
-  const r = rangeM / Math.cos(((span / n) * RAD) / 2);
+/** Vertices of a regular polygon whose edges sit rangeM from the centre. */
+function aroundPoints(rangeM, sides) {
+  const r = rangeM / Math.cos(Math.PI / sides);
   const out = [];
-  for (let i = 0; i <= n; i++) {
-    const b = (b0 + (span * i) / n) * RAD;
-    out.push([r * Math.sin(b), r * Math.cos(b)]);
+  for (let i = 0; i < sides; i++) {
+    const b = (i * 360) / sides + 180 / sides;
+    out.push([r * Math.sin(b * RAD), r * Math.cos(b * RAD)]);
   }
   return out;
+}
+
+/** Triangle facing `dir`: apex at the camera, far edge rangeM out. */
+function trianglePoints(rangeM, dir, half) {
+  const side = rangeM / Math.cos(half * RAD);
+  const corner = (b) => [side * Math.sin(b * RAD), side * Math.cos(b * RAD)];
+  return [[0, 0], corner(dir - half), corner(dir + half)];
 }
 
 /**
@@ -109,16 +116,10 @@ export function coverageRingsLocal(camera, opts = VIEW_DEFAULTS) {
     return [camera.coverage.map((p) => toLocal(p, at))];
   }
   const dirs = camera.directions ?? parseDirections(camera.direction);
-  const half = Math.min(180, Math.max(0, o.halfAngleDeg));
-  if (!dirs.length || half >= 180) {
-    const ring = arcPoints(o.rangeM, 0, 360);
-    ring.pop(); // 360 repeats 0
-    return [ring];
-  }
-  return dirs.map((dir) => [
-    [0, 0],
-    ...arcPoints(o.rangeM, dir - half, dir + half),
-  ]);
+  const half = Math.max(1, o.halfAngleDeg);
+  // A triangle cannot open 90 degrees or more either side; treat that as all round.
+  if (!dirs.length || half >= 80) return [aroundPoints(o.rangeM, 6)];
+  return dirs.map((dir) => trianglePoints(o.rangeM, dir, half));
 }
 
 /** Coverage polygons of one camera as closed [lon, lat] rings (GeoJSON order). */
