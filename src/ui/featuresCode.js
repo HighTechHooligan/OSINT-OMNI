@@ -104,7 +104,10 @@ Layers
   layer osm on | off       light OSM streets + building footprints
   turbines [on | off]      US wind turbines (USGS USWTDB); bare = summary
                            of turbines in view (count, MW, tallest)
-  turbines near            the turbine nearest the view centre
+  turbines near            the turbine nearest the view centre (shows its card)
+  turbines dots|3d|sites on | off
+                           sublayers: dots, 3D models scaled to hub height
+                           (zoomed in), wind farm site outlines
 Radio (local RTL-SDR receiver location, for decoding nearby aircraft)
   radio                    show where the receiver is set
   radio at <lat, lon>      set it by hand; no browser location needed
@@ -201,6 +204,18 @@ const AIRSPACE_KIND_ARGS = Object.freeze({
 });
 
 const TURBINES_ID = 'wind-turbines';
+const TURBINE_PARAM_ARGS = Object.freeze({
+  dots: 'dots',
+  turbines: 'dots',
+  '3d': 'models',
+  models: 'models',
+  model: 'models',
+  sites: 'sites',
+  site: 'sites',
+  outlines: 'sites',
+});
+const TURBINES_USAGE =
+  'Usage: turbines [on|off|near] | turbines dots|3d|sites on|off';
 
 /**
  * Build the command table. Dependencies are injected so it is testable
@@ -921,14 +936,25 @@ export function createFeatureCommands({
         'ok',
       );
     },
-    async turbines([arg]) {
+    async turbines([arg, value]) {
       const on = switchArg(arg);
       if (on !== null) return setLayer(TURBINES_ID, on);
-      const near = String(arg ?? '').toLowerCase() === 'near';
-      if (arg !== undefined && !near)
-        return print('Usage: turbines [on|off|near]', 'err');
+      const word = String(arg ?? '').toLowerCase();
+      const near = word === 'near';
       const dm = getDataManager();
       const layer = dm?.layers?.get?.(TURBINES_ID)?.module;
+      if (Object.hasOwn(TURBINE_PARAM_ARGS, word)) {
+        if (!layer) return print('Wind turbine layer unavailable', 'err');
+        const key = TURBINE_PARAM_ARGS[word];
+        const want = switchArg(value) ?? !layer.getParams()[key];
+        await ensureLayer(dm, TURBINES_ID);
+        if (
+          !dm.setLayerParams?.(TURBINES_ID, { [key]: want }, { origin: 'user' })
+        )
+          layer.setParams({ [key]: want });
+        return print(`turbines ${word} ${want ? 'on' : 'off'}`, 'ok');
+      }
+      if (arg !== undefined && !near) return print(TURBINES_USAGE, 'err');
       if (!layer) return print('Wind turbine layer unavailable', 'err');
       if (!dm.isEffectivelyEnabled(TURBINES_ID))
         await setLayer(TURBINES_ID, true);
@@ -957,6 +983,7 @@ export function createFeatureCommands({
       line.textContent = hit
         ? `${hit.km.toFixed(1)} km: ${describeTurbine(hit.turbine)}`
         : 'No turbines in view';
+      if (hit) layer.selectTurbine?.(hit.turbine.id);
     },
     async goto(_args, raw) {
       if (!raw) return print('Usage: goto <place | lat, lon>', 'err');

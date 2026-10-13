@@ -2126,7 +2126,8 @@
       "src/app/layers/windTurbines.js",
       "src/layers/windTurbines/index.js",
       "src/layers/windTurbines/records.js",
-      "src/layers/windTurbines/source.js"
+      "src/layers/windTurbines/source.js",
+      "src/layers/windTurbines/turbineModel.js"
     ],
     "external": [
       "hls.js",
@@ -2628,7 +2629,8 @@
       "src/app/layers/windTurbines.js",
       "src/layers/windTurbines/index.js",
       "src/layers/windTurbines/records.js",
-      "src/layers/windTurbines/source.js"
+      "src/layers/windTurbines/source.js",
+      "src/layers/windTurbines/turbineModel.js"
     ],
     "external": [
       "hls.js",

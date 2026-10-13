@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  pickModelIds,
+  siteCard,
+  turbineCard,
   describeSummary,
   describeTurbine,
   dotSize,
@@ -61,4 +64,54 @@ test('styling and descriptions', () => {
   const hit = nearestTurbine([t, { ...t, id: '2', lon: -99 }], -99.1, 32);
   assert.equal(hit.turbine.id, '2');
   assert.ok(hit.km > 9 && hit.km < 10);
+});
+
+test('turbine and site cards say what it is', () => {
+  const card = turbineCard({
+    id: '3038257',
+    lon: -100.36,
+    lat: 32.47,
+    manufacturer: 'Vestas',
+    model: 'V110-2.0',
+    kw: 2000,
+    hubM: 80,
+    rotorM: 110,
+    tipM: 135,
+    project: 'Roscoe',
+    year: 2008,
+    county: 'Nolan County',
+    state: 'TX',
+    faaOrs: '48-012345',
+  });
+  assert.equal(card.title, 'WIND TURBINE · Vestas V110-2.0');
+  assert.ok(card.details.includes('Capacity 2,000 kW'));
+  assert.ok(card.details.includes('Rotor 110 m · blade tip 135 m'));
+  assert.ok(card.details.some((l) => /FAA ORS 48-012345/.test(l)));
+  assert.match(
+    turbineCard({ id: '1', lon: 0, lat: 0, hubM: null }, { estimatedHub: true })
+      .details[1],
+    /unknown \(model height estimated\)/,
+  );
+  const site = siteCard({
+    name: 'Roscoe',
+    turbines: 627,
+    mw: 781.5,
+    years: [2008, 2009],
+    models: [{ name: 'Mitsubishi MWT-1000A', count: 209 }],
+    state: 'TX',
+  });
+  assert.equal(site.title, 'WIND FARM · Roscoe');
+  assert.match(site.details[0], /^627 turbines · 781.5 MW · online 2008–2009$/);
+  assert.equal(site.details[1], 'Mitsubishi MWT-1000A × 209');
+});
+
+test('3D models go to the nearest turbines within range', () => {
+  const turbines = [];
+  for (let i = 0; i < 50; i++)
+    turbines.push({ id: String(i), lon: -100 + i * 0.01, lat: 32 });
+  const near = pickModelIds(turbines, -100, 32, { max: 5, rangeKm: 15 });
+  assert.deepEqual([...near].sort(), ['0', '1', '2', '3', '4']);
+  const ranged = pickModelIds(turbines, -100, 32, { max: 400, rangeKm: 2 });
+  assert.equal(ranged.size, 3);
+  assert.equal(pickModelIds(turbines, NaN, 32).size, 0);
 });

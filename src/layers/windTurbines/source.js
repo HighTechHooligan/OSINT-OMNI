@@ -17,5 +17,16 @@ export function createWindTurbineSource({
         throw new Error('Malformed wind turbine response');
       return json;
     },
+    async getSites(bbox, { limit, signal } = {}) {
+      const params = new URLSearchParams({ bbox: bboxParam(bbox) });
+      if (limit) params.set('limit', String(limit));
+      const response = await fetchImpl(`${url}/sites?${params}`, { signal });
+      if (!response.ok)
+        throw new Error(`Wind farm sites HTTP ${response.status}`);
+      const json = await response.json();
+      if (!Array.isArray(json?.sites))
+        throw new Error('Malformed wind farm site response');
+      return json;
+    },
   };
 }

@@ -4,6 +4,9 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
+  buildSites,
+  convexHull,
+  querySites,
   normalizeTurbine,
   parseBbox,
   parseLimit,
@@ -150,6 +153,10 @@ test('proxy pages once, caches, and serves stale when USGS fails', async () => {
     assert.equal(first.headers['X-Uswtdb-Cache'], 'MISS');
     assert.equal(first.body.inView, 1);
     assert.equal(first.body.total, 2);
+    const sites = await h.get('/sites?bbox=-101,31,-99,33');
+    assert.equal(sites.status, 200);
+    assert.equal(sites.body.sites[0].name, 'Test Wind');
+    assert.equal((await h.get('/nope?bbox=-101,31,-99,33')).status, 404);
     const second = await h.get('/?bbox=-91,39,-89,41');
     assert.equal(second.headers['X-Uswtdb-Cache'], 'HIT');
     assert.equal(calls, 1);
@@ -176,4 +183,43 @@ test('proxy reports 502 with no cache and a dead upstream', async () => {
   } finally {
     h.cleanup();
   }
+});
+
+test('site outlines hull each project and filter by view', () => {
+  const turbines = [];
+  for (let i = 0; i < 6; i++)
+    turbines.push(
+      normalizeTurbine(row(i, -100 + i * 0.01, 32 + (i % 2) * 0.01)),
+    );
+  turbines.push(normalizeTurbine(row(50, -90, 40, { p_name: 'Solo' })));
+  turbines.push(normalizeTurbine(row(51, -90, 40, { p_name: null })));
+  const sites = buildSites(turbines);
+  assert.equal(sites.length, 2);
+  const big = sites.find((s) => s.name === 'Test Wind');
+  assert.equal(big.turbines, 6);
+  assert.equal(big.mw, 15);
+  assert.deepEqual(big.years, [2019, 2019]);
+  assert.deepEqual(big.models, [{ name: 'GE Wind GE2.5-116', count: 6 }]);
+  assert.ok(big.ring.length >= 4);
+  assert.ok(big.bbox.west < -100 && big.bbox.east > -99.95);
+  const solo = sites.find((s) => s.name === 'Solo');
+  assert.equal(solo.ring.length, 8);
+  const q = querySites(sites, { west: -101, south: 31, east: -99, north: 33 });
+  assert.equal(q.inView, 1);
+  assert.equal(q.sites[0].name, 'Test Wind');
+  assert.deepEqual(
+    convexHull([
+      [0, 0],
+      [1, 0],
+      [1, 1],
+      [0, 1],
+      [0.5, 0.5],
+    ]),
+    [
+      [0, 0],
+      [1, 0],
+      [1, 1],
+      [0, 1],
+    ],
+  );
 });

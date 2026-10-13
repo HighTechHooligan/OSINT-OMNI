@@ -635,6 +635,8 @@
   "src/layers/windTurbines/records.js",
   "src/layers/windTurbines/records.test.mjs",
   "src/layers/windTurbines/source.js",
+  "src/layers/windTurbines/turbineModel.js",
+  "src/layers/windTurbines/turbineModel.test.mjs",
   "server/providers/windTurbines.js",
   "src/tooling/windTurbines.test.mjs",
   "src/app/data.js",

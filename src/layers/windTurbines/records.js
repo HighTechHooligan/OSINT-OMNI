@@ -6,7 +6,10 @@
 /** Above this camera height the layer still loads, as a thinned overview. */
 export const TURBINE_DETAIL_HEIGHT_M = 25_000;
 /** Towers are drawn only when this few turbines are in view. */
-export const TURBINE_TOWER_MAX = 400;
+/** Close in, the nearest turbines (at most this many) get 3D models. */
+export const TURBINE_MODEL_MAX = 400;
+export const TURBINE_MODEL_RANGE_KM = 15;
+export const SITE_OUTLINE_COLOR = '#7FDBFF';
 export const TURBINE_VIEW_LIMIT = 3000;
 const SNAP_DEG = 0.05;
 
@@ -85,4 +88,66 @@ export function nearestTurbine(turbines, lon, lat) {
     }
   }
   return best ? { turbine: best, km: Math.sqrt(bestD) * 111.32 } : null;
+}
+
+const val = (v, unit) =>
+  Number.isFinite(v) ? `${v.toLocaleString('en-US')} ${unit}` : 'unknown';
+
+/** Pop-up card for one turbine: title + detail lines. */
+export function turbineCard(t, { estimatedHub = false } = {}) {
+  const make = [t.manufacturer, t.model].filter(Boolean).join(' ');
+  const place = [t.county, t.state].filter(Boolean).join(', ');
+  return {
+    title: `WIND TURBINE · ${make || 'make/model not recorded'}`,
+    details: [
+      `Capacity ${val(t.kw, 'kW')}${t.offshore ? ' · offshore' : ''}`,
+      `Hub height ${val(t.hubM, 'm')}${estimatedHub ? ' (model height estimated)' : ''}`,
+      `Rotor ${val(t.rotorM, 'm')} · blade tip ${val(t.tipM, 'm')}`,
+      `${t.project || 'Unnamed project'}${t.year ? ` · online ${t.year}` : ''}`,
+      ...(place ? [place] : []),
+      `${t.lat.toFixed(5)}, ${t.lon.toFixed(5)}`,
+      `USWTDB ${t.id}${t.faaOrs ? ` · FAA ORS ${t.faaOrs}` : ''}`,
+    ],
+  };
+}
+
+/** Pop-up card for one wind farm site outline. */
+export function siteCard(s) {
+  const place = [s.county, s.state].filter(Boolean).join(', ');
+  const years = s.years
+    ? s.years[0] === s.years[1]
+      ? `${s.years[0]}`
+      : `${s.years[0]}–${s.years[1]}`
+    : null;
+  return {
+    title: `WIND FARM · ${s.name}`,
+    details: [
+      `${s.turbines.toLocaleString('en-US')} turbines · ${val(s.mw, 'MW')}${years ? ` · online ${years}` : ''}`,
+      ...s.models.map((m) => `${m.name} × ${m.count}`),
+      ...(place ? [place] : []),
+      'Outline drawn around the turbines (approximate)',
+    ],
+  };
+}
+
+/**
+ * Ids of the turbines that get 3D models: the nearest `max` within
+ * `rangeKm` of the camera's ground point. The rest stay dots.
+ */
+export function pickModelIds(
+  turbines,
+  lon,
+  lat,
+  { max = TURBINE_MODEL_MAX, rangeKm = TURBINE_MODEL_RANGE_KM } = {},
+) {
+  if (!Number.isFinite(lon) || !Number.isFinite(lat)) return new Set();
+  const k = Math.cos((lat * Math.PI) / 180);
+  const r2 = (rangeKm / 111.32) ** 2;
+  const near = [];
+  for (const t of turbines ?? []) {
+    const d = ((t.lon - lon) * k) ** 2 + (t.lat - lat) ** 2;
+    if (d <= r2) near.push([d, t.id]);
+  }
+  near.sort((a, b) => a[0] - b[0]);
+  return new Set(near.slice(0, max).map(([, id]) => id));
 }
