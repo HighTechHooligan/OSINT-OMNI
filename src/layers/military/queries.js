@@ -115,6 +115,9 @@ export function createQueries({
       // getTrackedSubject and the voice narration can read it straight off the
       // descriptor instead of reaching back into `_flightData`.
       registration: _toCleanText(info?.registration) || null,
+      // Additive, for the aircraft pop-out: the feed's ICAO type and operator.
+      typeCode: tr3bTypeLabel(icao24, _toCleanText(info?.type) || null),
+      operator: _toCleanText(info?.operator) || null,
       position: Cesium.Cartesian3.clone(basePos),
       latitude: Cesium.Math.toDegrees(carto.latitude),
       longitude: Cesium.Math.toDegrees(carto.longitude),

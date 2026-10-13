@@ -3,6 +3,7 @@ import { createGroundFloor } from '../services/groundFloor.js';
 import { createMeshFloorSampler } from '../services/meshFloorSampler.js';
 import { createGroundSnap } from '../services/groundSnap.js';
 import { createFireAnchors } from '../layers/firms/anchors.js';
+import { resourceBudgets } from '../services/resourceBudgets.js';
 
 /** Own the DEM, coarse floors and mesh samples used by one application. */
 export function createSurfaceServices({
@@ -10,7 +11,12 @@ export function createSurfaceServices({
   signal,
   eventTarget = globalThis.window,
 }) {
-  const terrain = createTerrainHeights({ source: terrainSource, signal });
+  const terrain = createTerrainHeights({
+    source: terrainSource,
+    signal,
+    // RAM budget (resourceBudgets.js), read once at startup.
+    maxCacheEntries: resourceBudgets.get().terrainHeightEntries,
+  });
   const groundFloor = createGroundFloor({ terrain, signal });
   const meshFloor = createMeshFloorSampler({
     groundFloor,

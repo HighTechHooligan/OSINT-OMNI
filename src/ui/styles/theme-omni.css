@@ -17,7 +17,7 @@
 .features-code-toggle:hover,
 #features-code.open .features-code-toggle,
 .site-tray-toggle:hover,
-#site-tray.open .site-tray-toggle {
+.site-tray-dock.open .site-tray-toggle {
   background: var(--accent-fade);
 }
 

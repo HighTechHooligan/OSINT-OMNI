@@ -5,7 +5,10 @@ import { firmsProxy } from './firms.js';
 import { terrainHeightsProxy } from './terrain.js';
 import { elevation3depProxy } from './elevation3dep.js';
 import { alprTilesProxy } from './alprTiles.js';
+import { osmTilesProxy } from './osmTiles.js';
+import { windTurbinesProxy } from './windTurbines.js';
 import { adsbdbProxy } from './aircraft/enrichment.js';
+import { aircraftTriviaProxy } from './aircraft/trivia.js';
 import { overpassProxy } from './overpass.js';
 import { militaryInstallationsProxy } from './military-installations.js';
 import { regionalBriefProxy } from './regional/briefing.js';
@@ -25,6 +28,7 @@ import { googlePlacesContextProxy } from './places.js';
 import { keySetupEndpoint } from '../standalone/key-setup.js';
 import { weatherProxy } from './weather.js';
 import { firePerimetersProxy } from './firePerimeters.js';
+import { airspaceProxy } from './airspace.js';
 import { cycloneProxy } from './cyclones.js';
 import { windProxy } from './wind.js';
 
@@ -42,7 +46,10 @@ function localProviderPlugins({ realtime } = {}) {
     terrainHeightsProxy(),
     elevation3depProxy(),
     alprTilesProxy(),
+    osmTilesProxy(),
+    windTurbinesProxy(),
     adsbdbProxy(),
+    aircraftTriviaProxy(),
     overpassProxy(),
     militaryInstallationsProxy(),
     regionalBriefProxy(),
@@ -62,6 +69,7 @@ function localProviderPlugins({ realtime } = {}) {
     weatherProxy(),
     cycloneProxy(),
     firePerimetersProxy(),
+    airspaceProxy(),
     keySetupEndpoint(),
   ];
 }

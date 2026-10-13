@@ -903,6 +903,7 @@ export class StyleManager extends ShellFacade {
         receiver,
         feeds: this.services.localAdsbLayer?.feeds || null,
         radio: radioLayer,
+        getMapCenter: () => this._mapCenter(),
         actions: {
           isLocalAdsbEnabled: () =>
             Boolean(this._dataManager?.isEnabled('local-adsb')),
@@ -914,6 +915,25 @@ export class StyleManager extends ShellFacade {
         },
       });
     }
+  }
+
+  /** Ground point under the middle of the view, or null (receiver fallback). */
+  _mapCenter() {
+    const scene = this.viewer?.scene;
+    const canvas = scene?.canvas;
+    const ellipsoid = scene?.globe?.ellipsoid;
+    if (!canvas || !ellipsoid) return null;
+    const hit = this.viewer.camera.pickEllipsoid(
+      new Cesium.Cartesian2(canvas.clientWidth / 2, canvas.clientHeight / 2),
+      ellipsoid,
+    );
+    const c = hit && ellipsoid.cartesianToCartographic(hit);
+    return c
+      ? {
+          latitude: Cesium.Math.toDegrees(c.latitude),
+          longitude: Cesium.Math.toDegrees(c.longitude),
+        }
+      : null;
   }
 
   /**

@@ -64,6 +64,9 @@ export function adsbdbProxy() {
           ? `${a.manufacturer} ${a.type}`
           : a.type || null,
       registration: a.registration || null,
+      owner: a.registered_owner || null,
+      ownerCountry: a.registered_owner_country_name || null,
+      photoUrl: a.url_photo_thumbnail || a.url_photo || null,
     };
   }
 

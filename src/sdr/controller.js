@@ -274,6 +274,7 @@ export class SdrController {
       deviceLabel: null,
       receiverLocation: null,
       locationStatus: 'unknown',
+      locationSource: null,
       audioState: 'idle',
       samplesPerSecond: 0,
       workerBlocks: 0,
@@ -1264,8 +1265,58 @@ export class SdrController {
     return volume;
   }
 
-  async requestReceiverLocation() {
+  /**
+   * Set where the receiver is by hand (a typed spot, the map view, or a
+   * paired phone's position). Local ADS-B position decoding needs it; the
+   * browser's location permission is not involved.
+   * @param {{latitude:number, longitude:number}} location
+   * @param {{source?: 'gps'|'map'|'manual'|'phone'}} [options]
+   * @returns {boolean} false when the coordinates are not a place.
+   */
+  setReceiverLocation(location, { source = 'manual' } = {}) {
+    const latitude = Number(location?.latitude);
+    const longitude = Number(location?.longitude);
+    if (
+      !Number.isFinite(latitude) ||
+      !Number.isFinite(longitude) ||
+      Math.abs(latitude) > 90 ||
+      Math.abs(longitude) > 180
+    )
+      return false;
+    const receiverLocation = { latitude, longitude };
+    this._setState({
+      receiverLocation,
+      locationStatus: 'ready',
+      locationSource: source,
+      ...(source === 'gps'
+        ? {}
+        : {
+            message: `Receiver location set from the ${source === 'map' ? 'map view' : source === 'phone' ? 'phone' : 'typed spot'}: ${latitude.toFixed(4)}, ${longitude.toFixed(4)}`,
+          }),
+    });
+    this._worker?.postMessage({ type: 'location', location: receiverLocation });
+    return true;
+  }
+
+  /**
+   * Ask the browser for the receiver location. When the browser has no
+   * location or it is denied, `fallback` (the map view centre) is used
+   * instead, so the radio never depends on the location permission.
+   * @param {{fallback?: () => ({latitude:number, longitude:number}|null)}} [options]
+   */
+  async requestReceiverLocation({ fallback = null } = {}) {
+    const useFallback = (why) => {
+      const spot = fallback?.();
+      if (spot && this.setReceiverLocation(spot, { source: 'map' })) {
+        this._setState({
+          message: `${why}; using the map view (${spot.latitude.toFixed(4)}, ${spot.longitude.toFixed(4)}) as the receiver location. Features Code: radio at <lat, lon>`,
+        });
+        return true;
+      }
+      return false;
+    };
     if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      if (useFallback('Browser location is unavailable')) return true;
       this._setState({
         locationStatus: 'unavailable',
         message: 'Browser location is unavailable',
@@ -1281,18 +1332,16 @@ export class SdrController {
           maximumAge: 300_000,
         });
       });
-      const receiverLocation = {
-        latitude: position.coords.latitude,
-        longitude: position.coords.longitude,
-      };
-      this._setState({ receiverLocation, locationStatus: 'ready' });
-      this._worker?.postMessage({
-        type: 'location',
-        location: receiverLocation,
-      });
-      return true;
+      return this.setReceiverLocation(
+        {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+        },
+        { source: 'gps' },
+      );
     } catch (error) {
       console.warn('[SDR] Receiver location failed:', error);
+      if (useFallback('Location permission was not granted')) return true;
       this._setState({
         locationStatus: 'denied',
         message: 'Receiver location was not granted',

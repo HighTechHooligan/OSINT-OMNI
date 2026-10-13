@@ -20,11 +20,13 @@
 @import './src/ui/styles/command-dock-sliding.css';
 @import './src/ui/styles/features-code.css';
 @import './src/ui/styles/site-tray.css';
+@import './src/ui/styles/routes-tray.css';
 @import './src/ui/styles/voice-cost.css';
 @import './src/ui/styles/first-run.css';
 @import './src/ui/styles/provider-settings.css';
 
 @import './src/ui/styles/weather.css';
 @import './src/ui/styles/panel-surfaces.css';
+@import './src/ui/styles/popout-panels.css';
 @import './src/ui/styles/theme-omni.css';
 @import './src/ui/styles/cyber.css';
