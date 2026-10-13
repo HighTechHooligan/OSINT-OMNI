@@ -9,6 +9,8 @@ import { promises as fsp } from 'node:fs';
  *
  *   GET /api/wind-turbines?bbox=W,S,E,N[&limit=N]
  *     → { source, fetchedAt, total, inView, sampled, summary, turbines }
+ *   GET /api/wind-turbines/sites?bbox=W,S,E,N[&limit=N]
+ *     → { source, fetchedAt, inView, sampled, sites }  (project outlines)
  *
  * The whole database (~75k rows) is downloaded once in pages, kept in memory
  * and on disk (`.gev-cache/wind-turbines/`) for a week (USGS updates it
@@ -177,6 +179,114 @@ export function queryTurbines(turbines, bbox, limit = TURBINE_DEFAULT_LIMIT) {
   };
 }
 
+export const SITE_MAX = 400;
+const SITE_PAD_M = 150;
+
+/** Convex hull (Andrew's monotone chain) of [lon, lat] points, CCW, open. */
+export function convexHull(points) {
+  const pts = [...points].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  if (pts.length < 3) return pts;
+  const cross = (o, a, b) =>
+    (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower = [];
+  for (const p of pts) {
+    while (lower.length >= 2 && cross(lower.at(-2), lower.at(-1), p) <= 0)
+      lower.pop();
+    lower.push(p);
+  }
+  const upper = [];
+  for (const p of pts.reverse()) {
+    while (upper.length >= 2 && cross(upper.at(-2), upper.at(-1), p) <= 0)
+      upper.pop();
+    upper.push(p);
+  }
+  return lower.slice(0, -1).concat(upper.slice(0, -1));
+}
+
+/**
+ * Wind farm site outlines: one polygon per USWTDB project (name + state),
+ * the convex hull of its turbines padded by 150 m so single-row and
+ * one-turbine projects still read as an area. USWTDB has no site
+ * boundaries; this is an approximation drawn from the turbine positions.
+ */
+export function buildSites(turbines, padM = SITE_PAD_M) {
+  const groups = new Map();
+  for (const t of turbines) {
+    if (!t.project) continue;
+    const key = `${t.project}|${t.state ?? ''}`;
+    let g = groups.get(key);
+    if (!g) groups.set(key, (g = { key, list: [] }));
+    g.list.push(t);
+  }
+  const sites = [];
+  for (const { key, list } of groups.values()) {
+    const lat0 = list[0].lat;
+    const dLat = padM / 111_320;
+    const dLon =
+      padM / (111_320 * Math.max(0.1, Math.cos((lat0 * Math.PI) / 180)));
+    const padded = [];
+    for (const t of list)
+      for (let k = 0; k < 8; k++) {
+        const a = (k / 8) * Math.PI * 2;
+        padded.push([t.lon + Math.cos(a) * dLon, t.lat + Math.sin(a) * dLat]);
+      }
+    const ring = convexHull(padded).map(([lon, lat]) => [
+      Math.round(lon * 1e5) / 1e5,
+      Math.round(lat * 1e5) / 1e5,
+    ]);
+    let mw = 0;
+    const years = [];
+    const makes = new Map();
+    for (const t of list) {
+      mw += (t.kw ?? 0) / 1000;
+      if (t.year) years.push(t.year);
+      const make = [t.manufacturer, t.model].filter(Boolean).join(' ');
+      if (make) makes.set(make, (makes.get(make) ?? 0) + 1);
+    }
+    const lons = ring.map((p) => p[0]);
+    const lats = ring.map((p) => p[1]);
+    sites.push({
+      id: key,
+      name: list[0].project,
+      state: list[0].state,
+      county: list[0].county,
+      turbines: list.length,
+      mw: Math.round(mw * 10) / 10,
+      projectMw: list[0].projectMw,
+      years: years.length ? [Math.min(...years), Math.max(...years)] : null,
+      models: [...makes]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([name, count]) => ({ name, count })),
+      bbox: {
+        west: Math.min(...lons),
+        south: Math.min(...lats),
+        east: Math.max(...lons),
+        north: Math.max(...lats),
+      },
+      ring,
+    });
+  }
+  return sites;
+}
+
+/** Sites whose outline box touches the view, largest first, capped. */
+export function querySites(sites, bbox, limit = SITE_MAX) {
+  const hits = sites.filter(
+    (s) =>
+      s.bbox.east >= bbox.west &&
+      s.bbox.west <= bbox.east &&
+      s.bbox.north >= bbox.south &&
+      s.bbox.south <= bbox.north,
+  );
+  hits.sort((a, b) => b.turbines - a.turbines);
+  return {
+    inView: hits.length,
+    sampled: hits.length > limit,
+    sites: hits.slice(0, limit),
+  };
+}
+
 /** Vite plugin. `fetchImpl`, `cacheDir` and `now` are injectable for tests. */
 export function windTurbinesProxy({
   fetchImpl = (...args) => fetch(...args),
@@ -190,6 +300,16 @@ export function windTurbinesProxy({
   /** @type {Promise<{at:number, turbines:object[]}>|null} */
   let inflight = null;
   const diskFile = path.join(cacheDir, 'uswtdb.json');
+  /** Site outlines, rebuilt once per snapshot. */
+  let sitesFor = null;
+  let sites = [];
+  const sitesOf = (entry) => {
+    if (sitesFor !== entry) {
+      sites = buildSites(entry.turbines);
+      sitesFor = entry;
+    }
+    return sites;
+  };
 
   async function readDisk() {
     try {
@@ -281,16 +401,22 @@ export function windTurbinesProxy({
       if (!bbox) return send(400, { error: 'bbox=W,S,E,N required' });
       try {
         const { entry, cache } = await resolve();
+        const route = url.pathname.replace(/\/+$/, '');
+        if (route && route !== '/sites')
+          return send(404, { error: 'unknown wind turbine path' });
+        const limit = url.searchParams.get('limit');
         send(
           200,
           {
             source: 'USWTDB',
             fetchedAt: new Date(entry.at).toISOString(),
-            ...queryTurbines(
-              entry.turbines,
-              bbox,
-              parseLimit(url.searchParams.get('limit')),
-            ),
+            ...(route === '/sites'
+              ? querySites(
+                  sitesOf(entry),
+                  bbox,
+                  Math.min(SITE_MAX, parseLimit(limit ?? SITE_MAX)),
+                )
+              : queryTurbines(entry.turbines, bbox, parseLimit(limit))),
           },
           { 'X-Uswtdb-Cache': cache },
         );

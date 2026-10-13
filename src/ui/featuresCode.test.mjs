@@ -297,10 +297,15 @@ test('turbines toggles the layer and prints the view summary', async () => {
     },
   };
   let updates = 0;
+  const selected = [];
+  const params = { dots: true, models: true, sites: false };
   const module = {
     update: async () => updates++,
     getView: () => view,
     getStats: () => ({ error: null }),
+    selectTurbine: (id) => selected.push(id),
+    getParams: () => ({ ...params }),
+    setParams: (next) => Object.assign(params, next),
   };
   const dm = {
     layers: new Map([['wind-turbines', { module }]]),
@@ -325,6 +330,11 @@ test('turbines toggles the layer and prints the view summary', async () => {
   assert.match(h.lines.at(-1).text, /1 turbines in view · 2 MW/);
   await h.run('turbines near');
   assert.match(h.lines.at(-1).text, /km: Turbine · 2000 kW/);
+  assert.deepEqual(selected, ['1']);
+  await h.run('turbines sites on');
+  await h.run('turbines 3d off');
+  assert.deepEqual(params, { dots: true, models: false, sites: true });
+  assert.match(h.lines.at(-1).text, /turbines 3d off/);
   await h.run('turbines off');
   await h.run('layer turbines on');
   assert.deepEqual(toggles, [
